@@ -1,0 +1,16 @@
+{
+  "name": "northbridge-payables",
+  "version": "1.0.0",
+  "description": "Multi-currency supplier invoice and payment application (demo/assignment project).",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {}
+}
+
