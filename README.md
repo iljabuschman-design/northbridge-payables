@@ -1,5 +1,7 @@
 # Northbridge Payables
 
+**Live demo:** https://northbridge-payables.onrender.com — hosted on Render's free tier, so the first request after a period of inactivity can take 30-50s to wake the instance up; it's fast after that.
+
 A small multi-currency supplier invoice & payment application, built as a
 practical demonstration for one fictional company (Northbridge Trading Ltd,
 base currency GBP) with dummy suppliers and transactions.
@@ -21,6 +23,17 @@ base currency GBP) with dummy suppliers and transactions.
 
 See the in-app Assumptions tab for the full accounting/VAT/FX assumptions
 made.
+
+## Hosting notes
+
+Deployed on Render's free web-service tier, built straight from the `Dockerfile` in this
+repo (pins `node:22-alpine` so `node:sqlite` is available). The free tier has no
+persistent disk, so the SQLite file lives on the container's local, ephemeral
+filesystem: it survives refreshes and is shared across browsers/devices for as long as
+that instance keeps running, but a redeploy or a restart after a long idle period resets
+it back to the seeded demo data (the app reseeds automatically on startup if the database
+is empty, so it never comes up empty). For a permanent production deployment, switch
+`DB_PATH` to a mounted persistent disk (or swap in Postgres) on a paid instance.
 
 ## Running locally
 
