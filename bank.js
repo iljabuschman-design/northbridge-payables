@@ -255,4 +255,65 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
   });
 }
 
-module.exports = { parseCamt, importStatement, listStatements, getStatement, postLine };
+// ---------- Automatic settlement ----------
+
+/**
+ * True if the invoice number appears in the text as a whole "word", so
+ * "payment for invoice 26/01" matches 26/01, but 20260345 doesn't match
+ * invoice 2026 or 260345.
+ */
+function mentionsInvoice(text, invoiceNumber) {
+  const n = String(invoiceNumber).trim().toLowerCase();
+  if (!n) return false;
+  const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Not glued to other letters/digits, and not part of a longer number like 2026-09 or 09/2026.
+  return new RegExp(`(?<![a-z0-9])(?<![0-9][-/.])${escaped}(?![a-z0-9])(?![-/.][a-z0-9])`).test(String(text).toLowerCase());
+}
+
+/** The one open invoice (sales for money in, purchase for money out) whose number the line mentions, if any. */
+function matchInvoice(line) {
+  const text = `${line.remittance || ''} ${line.counterparty || ''}`;
+  const type = line.direction === 'CRDT' ? 'sale' : 'purchase';
+  const matches = acct.listInvoices(type).filter((i) => i.status !== 'Paid' && mentionsInvoice(text, i.invoice_number));
+  // Several invoices mentioned (e.g. one payment for two invoices) is left for the user to split.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
+ * Settle every unposted line of a statement that mentions exactly one open
+ * invoice. Same-currency lines settle the bank amount (a partial payment if
+ * it's less than what's open); a line larger than the open balance is left
+ * alone. Lines in another currency than the invoice settle its full remaining
+ * balance, with the FX difference booked as usual.
+ */
+async function autoSettleStatement(statementId) {
+  const statement = db.prepare('SELECT * FROM bank_statements WHERE id = ?').get(statementId);
+  if (!statement) throw httpError(404, 'Statement not found');
+  const bankCcy = acct.getAccount(statement.bank_account).bank_currency;
+  const lines = db.prepare('SELECT * FROM bank_statement_lines WHERE statement_id = ? AND journal_id IS NULL ORDER BY booking_date, id').all(statementId);
+  const settled = [];
+  for (const line of lines) {
+    const invoice = matchInvoice(line);
+    if (!invoice) continue;
+    if (invoice.currency === bankCcy && line.amount > invoice.remaining_amount + 0.005) continue;
+    try {
+      await postLine(line.id, { mode: 'invoice', invoice_id: invoice.id, invoice_amount: invoice.remaining_amount });
+      db.prepare('UPDATE bank_statement_lines SET auto_settled = 1 WHERE id = ?').run(line.id);
+      settled.push({ line_id: line.id, invoice_number: invoice.invoice_number });
+    } catch (err) {
+      console.error(`Auto-settle of bank line ${line.id} failed:`, err.message);
+    }
+  }
+  return settled;
+}
+
+/** Import a CAMT file, then automatically settle lines that name an open invoice. */
+async function importAndSettle(body) {
+  const results = importStatement(body);
+  for (const r of results) {
+    r.auto_settled = r.statement_id ? await autoSettleStatement(r.statement_id) : [];
+  }
+  return results;
+}
+
+module.exports = { parseCamt, importStatement, importAndSettle, autoSettleStatement, listStatements, getStatement, postLine };

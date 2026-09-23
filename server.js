@@ -161,7 +161,12 @@ const routes = [
 
   // Bank statements (CAMT)
   { method: 'GET', pattern: /^\/api\/bank\/statements$/, handler: async () => bank.listStatements() },
-  { method: 'POST', pattern: /^\/api\/bank\/statements$/, handler: json((body) => bank.importStatement(body)) },
+  { method: 'POST', pattern: /^\/api\/bank\/statements$/, handler: json((body) => bank.importAndSettle(body)) },
+  {
+    method: 'POST',
+    pattern: /^\/api\/bank\/statements\/(\d+)\/auto-settle$/,
+    handler: async (req, m) => bank.autoSettleStatement(Number(m[1])),
+  },
   {
     method: 'GET',
     pattern: /^\/api\/bank\/statements\/(\d+)$/,

@@ -559,7 +559,12 @@ document.getElementById('form-upload').addEventListener('submit', async (e) => {
     const results = await post('/api/bank/statements', { filename: file.name, content, bank_account: form.bank_account.value || null });
     const imported = results.reduce((s, r) => s + r.imported, 0);
     const skipped = results.reduce((s, r) => s + r.skipped, 0);
-    okEl.textContent = `Imported ${imported} line(s)` + (skipped ? `, skipped ${skipped} already imported or unusable line(s)` : '') + '.';
+    const auto = results.flatMap((r) => r.auto_settled || []);
+    okEl.textContent =
+      `Imported ${imported} line(s)` +
+      (skipped ? `, skipped ${skipped} already imported or unusable line(s)` : '') +
+      '.' +
+      (auto.length ? ` Automatically settled ${auto.length} line(s) against invoice ${auto.map((a) => a.invoice_number).join(', ')}.` : '');
     const newest = results.find((r) => r.statement_id);
     if (newest) currentStatementId = newest.statement_id;
     form.file.value = '';
@@ -569,7 +574,33 @@ document.getElementById('form-upload').addEventListener('submit', async (e) => {
   }
 });
 
+// Same rule as the server: the invoice number must appear as a whole "word" in the text.
+function mentionsInvoice(text, invoiceNumber) {
+  const n = String(invoiceNumber).trim().toLowerCase();
+  if (!n) return false;
+  const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Not glued to other letters/digits, and not part of a longer number like 2026-09 or 09/2026.
+  return new RegExp(`(?<![a-z0-9])(?<![0-9][-/.])${escaped}(?![a-z0-9])(?![-/.][a-z0-9])`).test(String(text).toLowerCase());
+}
+
+document.getElementById('btn-auto-settle').addEventListener('click', async () => {
+  const errEl = document.getElementById('statement-error');
+  const okEl = document.getElementById('statement-result');
+  errEl.textContent = '';
+  okEl.textContent = '';
+  try {
+    const settled = await post(`/api/bank/statements/${currentStatementId}/auto-settle`, {});
+    await loadBank();
+    document.getElementById('statement-result').textContent = settled.length
+      ? `Settled ${settled.length} line(s) against invoice ${settled.map((s) => s.invoice_number).join(', ')}.`
+      : 'No open lines mention the number of an open invoice.';
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
 async function openStatement(id) {
+  if (id !== currentStatementId) document.getElementById('statement-result').textContent = '';
   currentStatementId = id;
   document.querySelectorAll('#statements-table tr').forEach((tr) => tr.classList.toggle('selected', Number(tr.dataset.id) === id));
   const [st, openInvoices] = await Promise.all([api(`/api/bank/statements/${id}`), api('/api/invoices')]);
@@ -587,11 +618,12 @@ async function openStatement(id) {
       const amounts = `<td class="num">${moneyIn ? fmt(l.amount, l.currency) : ''}</td><td class="num">${moneyIn ? '' : fmt(l.amount, l.currency)}</td>`;
       if (l.journal_id) {
         const what = l.payment_id ? esc(l.journal_description) : `${esc(l.contra_accounts || '')} - ${esc(l.journal_description)}`;
-        return `<tr><td>${esc(l.booking_date)}</td><td>${details}</td>${amounts}<td colspan="2"><span class="badge paid">Posted</span> <span class="muted">${what}</span></td></tr>`;
+        const badge = l.auto_settled ? '<span class="badge paid">Auto-settled</span>' : '<span class="badge paid">Posted</span>';
+        return `<tr><td>${esc(l.booking_date)}</td><td>${details}</td>${amounts}<td colspan="2">${badge} <span class="muted">${what}</span></td></tr>`;
       }
       const candidates = open.filter((i) => i.type === (moneyIn ? 'sale' : 'purchase'));
-      const text = `${l.remittance || ''} ${l.counterparty || ''}`.toLowerCase();
-      const suggested = candidates.find((i) => text.includes(i.invoice_number.toLowerCase()));
+      const text = `${l.remittance || ''} ${l.counterparty || ''}`;
+      const suggested = candidates.find((i) => mentionsInvoice(text, i.invoice_number));
       const invOptions = candidates
         .map(
           (i) =>

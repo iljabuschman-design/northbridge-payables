@@ -179,6 +179,12 @@ if (currentVersion < SCHEMA_VERSION) {
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec(SCHEMA);
 
+// Additive changes, applied in place so existing data is kept.
+const bankLineCols = db.prepare('PRAGMA table_info(bank_statement_lines)').all().map((c) => c.name);
+if (!bankLineCols.includes('auto_settled')) {
+  db.exec('ALTER TABLE bank_statement_lines ADD COLUMN auto_settled INTEGER NOT NULL DEFAULT 0');
+}
+
 function round2(n) {
   return Math.round((n + (n >= 0 ? 1e-9 : -1e-9)) * 100) / 100;
 }

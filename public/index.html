@@ -105,8 +105,12 @@
     </div>
 
     <div class="panel" id="statement-panel" style="margin-top:16px;" hidden>
-      <h2 id="statement-title"></h2>
-      <p class="hint">For each line choose the opposing ledger account (for example 6100 Salaries, or 1100 Accounts receivable) or settle an open invoice, then click Post. Posting an invoice also records the payment on it and books any FX difference.</p>
+      <div class="panel-header">
+        <h2 id="statement-title"></h2>
+        <button class="btn btn-small" id="btn-auto-settle" title="Settle every open line whose description mentions an open invoice number">Auto-settle matching lines</button>
+      </div>
+      <p class="hint">Lines whose description mentions the number of an open invoice (e.g. "payment for invoice 26/01") are settled against it automatically on upload. For the other lines, choose the opposing ledger account (for example 6100 Salaries) or an open invoice, then click Post. Created the invoice after uploading? Click <em>Auto-settle matching lines</em>.</p>
+      <p class="ok-msg" id="statement-result"></p>
       <p class="error" id="statement-error"></p>
       <div class="table-wrap">
         <table class="table" id="statement-lines-table">
