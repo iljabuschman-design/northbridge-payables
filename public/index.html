@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Northbridge Payables — Supplier Invoices &amp; Payments</title>
+<title>Northbridge Books — Invoices, Bank &amp; Financials</title>
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -13,14 +13,18 @@
       <span class="brand-mark">NB</span>
       <div>
         <div class="brand-name">Northbridge Trading Ltd</div>
-        <div class="brand-sub">Supplier invoices &amp; payments · base currency <strong>GBP</strong></div>
+        <div class="brand-sub">Invoices, bank &amp; financials · base currency <strong>GBP</strong></div>
       </div>
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
-      <button class="tab" data-tab="invoices">Invoices</button>
+      <button class="tab" data-tab="sales">Sales invoices</button>
+      <button class="tab" data-tab="purchases">Purchase invoices</button>
+      <button class="tab" data-tab="bank">Bank</button>
+      <button class="tab" data-tab="journals">Journals</button>
       <button class="tab" data-tab="ledger">Ledger</button>
-      <button class="tab" data-tab="suppliers">Suppliers</button>
+      <button class="tab" data-tab="financials">Financials</button>
+      <button class="tab" data-tab="setup">Setup</button>
       <button class="tab" data-tab="assumptions">Assumptions</button>
     </nav>
   </div>
@@ -28,136 +32,278 @@
 
 <main id="app">
 
+  <!-- Dashboard -->
   <section id="view-dashboard" class="view">
     <div class="cards" id="summary-cards"></div>
+    <p class="hint rates-line" id="dashboard-rates"></p>
     <div class="grid-2">
       <div class="panel">
         <h2>Outstanding by currency</h2>
-        <table class="table" id="currency-table">
-          <thead><tr><th>Currency</th><th>Open invoices</th><th>Outstanding (original)</th><th>Outstanding (GBP equiv.)</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="table" id="currency-table">
+            <thead><tr><th>Currency</th><th class="num">Receivables</th><th class="num">Receivables (GBP)</th><th class="num">Payables</th><th class="num">Payables (GBP)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
       <div class="panel">
         <h2>Books check</h2>
         <p id="tb-status" class="tb-status"></p>
-        <table class="table" id="tb-mini-table">
-          <thead><tr><th>Account</th><th>Debit</th><th>Credit</th></tr></thead>
+        <div class="table-wrap">
+          <table class="table" id="tb-mini-table">
+            <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sales & purchase invoices share one layout -->
+  <section id="view-sales" class="view" hidden>
+    <div class="panel-header">
+      <h2>Sales invoices</h2>
+      <button class="btn btn-primary" data-new-invoice="sale">+ New sales invoice</button>
+    </div>
+    <div class="table-wrap"><table class="table invoices-table" id="sales-table"></table></div>
+  </section>
+
+  <section id="view-purchases" class="view" hidden>
+    <div class="panel-header">
+      <h2>Purchase invoices</h2>
+      <button class="btn btn-primary" data-new-invoice="purchase">+ New purchase invoice</button>
+    </div>
+    <div class="table-wrap"><table class="table invoices-table" id="purchases-table"></table></div>
+  </section>
+
+  <!-- Bank statements -->
+  <section id="view-bank" class="view" hidden>
+    <div class="panel">
+      <h2>Upload bank statement</h2>
+      <form id="form-upload" class="upload-row">
+        <label>Bank ledger account
+          <select name="bank_account" id="upload-bank-select"></select>
+        </label>
+        <label>CAMT file (.xml)
+          <input type="file" name="file" accept=".xml,.053,.052,.054,text/xml,application/xml" required />
+        </label>
+        <button type="submit" class="btn btn-primary">Upload</button>
+      </form>
+      <p class="hint">CAMT.053 (statement), CAMT.052 and CAMT.054 files are supported. Need a file to try it with? Download the <a href="/samples/camt053-bank-gbp-sample.xml" download>sample GBP statement</a>.</p>
+      <p class="error" id="upload-error"></p>
+      <p class="ok-msg" id="upload-result"></p>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Statements</h2>
+      <div class="table-wrap">
+        <table class="table" id="statements-table">
+          <thead><tr><th>Uploaded</th><th>Bank account</th><th>Statement</th><th>Period</th><th>File</th><th class="num">Lines</th><th class="num">To post</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" id="statement-panel" style="margin-top:16px;" hidden>
+      <h2 id="statement-title"></h2>
+      <p class="hint">For each line choose the opposing ledger account (for example 6100 Salaries, or 1100 Accounts receivable) or settle an open invoice, then click Post. Posting an invoice also records the payment on it and books any FX difference.</p>
+      <p class="error" id="statement-error"></p>
+      <div class="table-wrap">
+        <table class="table" id="statement-lines-table">
+          <thead><tr><th>Date</th><th>Counterparty / details</th><th class="num">In</th><th class="num">Out</th><th>Book against</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
     </div>
   </section>
 
-  <section id="view-invoices" class="view" hidden>
+  <!-- Journals -->
+  <section id="view-journals" class="view" hidden>
     <div class="panel-header">
-      <h2>Supplier invoices</h2>
-      <button class="btn btn-primary" id="btn-new-invoice">+ New invoice</button>
+      <h2>Journals</h2>
+      <button class="btn btn-primary" id="btn-new-journal">+ New journal entry</button>
     </div>
-    <table class="table" id="invoices-table">
-      <thead>
-        <tr>
-          <th>Supplier</th><th>Invoice #</th><th>Date</th><th>Ccy</th>
-          <th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th>
-          <th class="num">Rate</th><th class="num">Total (GBP)</th>
-          <th class="num">Paid</th><th class="num">Remaining</th><th class="num">Remaining (GBP)</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
-
-  <section id="view-ledger" class="view" hidden>
-    <div class="panel-header">
-      <h2>General ledger — all journal entries</h2>
-    </div>
-    <table class="table" id="ledger-table">
-      <thead><tr><th>Date</th><th>Account</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div class="panel" style="margin-top:24px;">
-      <h2>Trial balance</h2>
-      <table class="table" id="tb-full-table">
-        <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+    <div class="table-wrap">
+      <table class="table" id="journals-table">
+        <thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Source</th><th class="num">Lines</th><th class="num">Amount (GBP)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
 
-  <section id="view-suppliers" class="view" hidden>
+  <!-- Ledger -->
+  <section id="view-ledger" class="view" hidden>
     <div class="panel-header">
-      <h2>Suppliers</h2>
-      <button class="btn btn-primary" id="btn-new-supplier">+ New supplier</button>
+      <h2>General ledger — all entries</h2>
     </div>
-    <table class="table" id="suppliers-table">
-      <thead><tr><th>Name</th><th>Country</th><th>Currency</th><th>VAT number</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-wrap">
+      <table class="table" id="ledger-table">
+        <thead><tr><th>Date</th><th>Account</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="panel" style="margin-top:24px;">
+      <h2>Trial balance</h2>
+      <div class="table-wrap">
+        <table class="table" id="tb-full-table">
+          <thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 
+  <!-- Financial statements -->
+  <section id="view-financials" class="view" hidden>
+    <div class="panel-header wrap">
+      <h2>Financial statements</h2>
+      <form id="form-period" class="period-row">
+        <label>From <input type="date" name="from" required /></label>
+        <label>To <input type="date" name="to" required /></label>
+        <button type="submit" class="btn">Update</button>
+        <label class="check"><input type="checkbox" id="fin-detail" checked /> Show accounts</label>
+      </form>
+    </div>
+    <div class="fin-grid">
+      <div class="panel">
+        <h2>Profit &amp; loss</h2>
+        <p class="hint" id="pl-period"></p>
+        <table class="table fin" id="pl-table"></table>
+      </div>
+      <div class="panel">
+        <h2>Balance sheet</h2>
+        <table class="table fin" id="bs-table"></table>
+        <p class="hint" id="bs-check"></p>
+      </div>
+      <div class="panel span-2">
+        <h2>Cash flow statement</h2>
+        <p class="hint">Indirect method: starts from the result for the period and adjusts for movements in the other balance sheet items.</p>
+        <table class="table fin" id="cf-table"></table>
+        <p class="hint" id="cf-check"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Setup -->
+  <section id="view-setup" class="view" hidden>
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Chart of accounts</h2>
+        <button class="btn btn-primary" id="btn-new-account">+ New account</button>
+      </div>
+      <p class="hint">The category decides where an account appears on the balance sheet, profit &amp; loss and cash flow statement. Changing it updates the Financials tab straight away.</p>
+      <div class="table-wrap">
+        <table class="table" id="accounts-table">
+          <thead><tr><th>Code</th><th>Name</th><th>Category (mapping)</th><th>Statement</th><th>Used for</th><th class="num">Balance</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-2 even" style="margin-top:16px;">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Customers</h2>
+          <button class="btn btn-small" data-new-party="customer">+ New customer</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="customers-table">
+            <thead><tr><th>Name</th><th>Country</th><th>Ccy</th><th>VAT number</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Suppliers</h2>
+          <button class="btn btn-small" data-new-party="supplier">+ New supplier</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="suppliers-table">
+            <thead><tr><th>Name</th><th>Country</th><th>Ccy</th><th>VAT number</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-header">
+        <h2>Exchange rates (ECB)</h2>
+        <button class="btn btn-small" id="btn-refresh-rates">Refresh now</button>
+      </div>
+      <div id="fx-status"></div>
+    </div>
+  </section>
+
+  <!-- Assumptions -->
   <section id="view-assumptions" class="view" hidden>
     <div class="panel prose">
       <h2>Scope &amp; accounting assumptions</h2>
-      <p>This is a demonstration application built around one fictional company, <strong>Northbridge Trading Ltd</strong>, with dummy suppliers and transactions. No real company data, live payment rails, bank feeds or HMRC integration are used.</p>
+      <p>This is a demonstration application built around one fictional company, <strong>Northbridge Trading Ltd</strong>, with dummy customers, suppliers and transactions. No real company data, live payment rails or HMRC integration are used.</p>
 
       <h3>Base currency</h3>
-      <p>The company's base (reporting) currency is <strong>GBP</strong>. Every invoice and payment carries its own transaction currency (GBP, EUR or USD) plus the exchange rate used to translate it into GBP at that moment. All ledger entries are posted in GBP so the books always speak one currency, while original-currency amounts and rates are retained alongside each entry for reference.</p>
+      <p>The company's base (reporting) currency is <strong>GBP</strong>. Every invoice, payment and journal carries its own transaction currency (GBP, EUR or USD) plus the exchange rate used to translate it into GBP. All ledger entries are posted in GBP so the books speak one currency; original-currency amounts and rates are kept alongside each entry for reference.</p>
 
       <h3>Exchange rates</h3>
-      <p>Rates are entered by the user at the point of recording each invoice or payment, representing "the rate actually used" for that transaction — there is no live FX feed. This matches the brief's requirement to <em>record</em> the exchange rate used, rather than have the system source it automatically. Suggested/last-used rates are offered as a convenience only.</p>
+      <p>Rates come from the <strong>European Central Bank</strong>'s daily reference rates (data.ecb.europa.eu). The ECB quotes everything against the euro, so GBP rates are derived: 1 EUR = the GBP/EUR rate, and 1 USD = (GBP/EUR) ÷ (USD/EUR). The server fetches new rates on start-up and every 6 hours. The ECB publishes on working days around 16:00 CET; for weekends and holidays the last published rate is used. The rate is filled in automatically on invoices, payments and journals but can always be overwritten with the rate actually achieved.</p>
+
+      <h3>Chart of accounts &amp; reporting</h3>
+      <p>Every ledger account is mapped to a reporting category (Setup tab), which decides where it appears in the financial statements: fixed assets, trade receivables, other current assets, cash &amp; bank, equity, trade payables and other current liabilities on the balance sheet; revenue, cost of sales, overheads, financial income and financial expenses on the P&amp;L. P&amp;L accounts are not closed off to retained earnings at year end; instead the cumulative result is shown as its own line within equity. The cash flow statement uses the indirect method.</p>
+
+      <h3>Invoices</h3>
+      <p>Sales and purchase invoices can have any number of lines, each booked to its own ledger account with its own VAT rate. Purchase invoices post Dr expense/asset lines, Dr VAT recoverable, Cr accounts payable; sales invoices post Dr accounts receivable, Cr revenue lines, Cr VAT payable.</p>
 
       <h3>Foreign-exchange gain/loss</h3>
-      <p>A foreign-currency invoice is booked to Accounts Payable at the rate ruling on the invoice date. When it is paid (in full or in part), the portion of the liability being settled is relieved at that <em>original booked rate</em>, while the cash/bank leg is recorded at the rate ruling on the payment date. Any difference between the two is posted as a realised FX gain or loss. This is the standard treatment for monetary payables denominated in a foreign currency and is what lets the app show a gain when the foreign currency has weakened against GBP since the invoice was raised, and a loss when it has strengthened.</p>
-      <p>The application does not currently perform period-end revaluation of <em>unrealised</em> FX movements on invoices that remain open at a reporting date — only gains/losses realised on actual payment are posted. This would be a natural next enhancement (see below).</p>
+      <p>A foreign-currency invoice is booked to accounts payable/receivable at the rate on the invoice date. When it is settled, from any bank account, the part settled is cleared at that original booked rate, while the bank leg is recorded at what actually went through the bank in GBP (the bank amount times the ECB rate for a foreign-currency account, or simply the GBP amount for the GBP account). The difference is posted to <strong>Realised FX gain</strong> (financial income) or <strong>Realised FX loss</strong> (financial expenses). Example: a 1,000 USD invoice booked at 800 GBP and paid from the GBP account for 750 GBP gives a 50 GBP gain.</p>
+      <p>Period-end revaluation of <em>unrealised</em> FX on open invoices and foreign-currency bank balances is not done yet.</p>
+
+      <h3>Manual journals &amp; bank statements</h3>
+      <p>Manual journals can post to any account and must balance before they are saved. Bank statements are imported from CAMT files and linked to a bank ledger account (automatically via the IBAN once known). Each line is booked against an opposing account or matched to an open invoice. Note that a manual journal or bank line posted directly to accounts receivable/payable does not mark any invoice as paid; use the invoice option for that.</p>
 
       <h3>VAT</h3>
-      <p>VAT entered on an invoice is treated as recoverable input VAT and posted to a VAT Recoverable account — appropriate for a VAT-registered UK company purchasing taxable supplies. No output VAT, VAT return, partial exemption or reverse-charge mechanics are modelled; the seed data simply uses VAT = 0 for the overseas EUR/USD supplier invoices (treated as zero-rated/reverse-charged in this simplified model) and a normal 20% VAT charge for the UK supplier invoices, to keep the worked example realistic without building a full VAT engine.</p>
-
-      <h3>Accounts used</h3>
-      <p>Purchases (expense), VAT Recoverable (asset), Accounts Payable (liability, sub-ledgered by invoice), one Bank account per currency (GBP/EUR/USD — reflecting a company that settles suppliers directly from matching-currency accounts), and Realised FX Gain / Realised FX Loss (P&amp;L). Every invoice and payment posts a balanced double-entry journal; the Ledger tab's trial balance should always net to zero, which is checked live on the Dashboard as a sanity check on the books.</p>
+      <p>Input VAT is posted to VAT recoverable and output VAT to VAT payable. No VAT return, partial exemption or reverse-charge mechanics are modelled; overseas invoices in the demo data use 0% VAT.</p>
 
       <h3>Persistence</h3>
-      <p>All data is stored server-side in a SQLite database file, not in the browser, so it survives page refreshes and is visible from any browser hitting this URL.</p>
-
-      <h3>Ideas for a fuller product</h3>
-      <p>Given more time, natural next steps include: period-end revaluation of open foreign-currency balances at a closing rate (unrealised FX to a separate reserve); supplier statements and an AP ageing report; multi-user roles and an audit trail of edits; approval workflow before an invoice is posted; a live/pluggable FX rate source with the manual rate kept as an override; multi-entity/multi-book consolidation; and export of the ledger to CSV/PDF for the accountant.</p>
+      <p>All data is stored server-side in a SQLite database file, so it survives page refreshes and is visible from any browser hitting this URL.</p>
     </div>
   </section>
 
 </main>
 
-<dialog id="dialog-invoice">
+<!-- Invoice (sales or purchase) -->
+<dialog id="dialog-invoice" class="wide">
   <form id="form-invoice" class="form">
-    <h2>New supplier invoice</h2>
-    <label>Supplier
-      <select name="supplier_id" required id="invoice-supplier-select"></select>
-    </label>
-    <label>Invoice number
-      <input name="invoice_number" required maxlength="40" />
-    </label>
-    <label>Invoice date
-      <input name="invoice_date" type="date" required />
-    </label>
-    <label>Currency
-      <select name="currency" id="invoice-currency-select" required>
-        <option value="GBP">GBP</option>
-        <option value="EUR">EUR</option>
-        <option value="USD">USD</option>
-      </select>
-    </label>
+    <h2 id="invoice-dialog-title">New invoice</h2>
     <div class="row">
-      <label>Net amount
-        <input name="net_amount" type="number" min="0" step="0.01" required />
+      <label><span id="invoice-party-label">Party</span>
+        <select name="party_id" required id="invoice-party-select"></select>
       </label>
-      <label>VAT amount
-        <input name="vat_amount" type="number" min="0" step="0.01" value="0" required />
+      <label>Invoice number
+        <input name="invoice_number" required maxlength="40" />
       </label>
     </div>
-    <label>Exchange rate (1 unit of invoice currency = ? GBP)
-      <input name="exchange_rate" type="number" min="0.0001" step="0.0001" value="1" required id="invoice-rate-input" />
-    </label>
-    <p class="hint" id="invoice-total-hint"></p>
+    <div class="row">
+      <label>Invoice date
+        <input name="invoice_date" type="date" required />
+      </label>
+      <label>Currency
+        <select name="currency" id="invoice-currency-select" required></select>
+      </label>
+      <label>Exchange rate (1 unit = ? GBP)
+        <input name="exchange_rate" type="number" min="0" step="any" value="1" required />
+      </label>
+    </div>
+    <p class="hint" id="invoice-rate-hint"></p>
+    <div class="section-title">Invoice lines</div>
+    <div class="table-wrap">
+      <table class="table lines-table" id="invoice-lines">
+        <thead><tr><th>Description</th><th>Ledger account</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div><button type="button" class="btn btn-small" id="btn-add-invoice-line">+ Add line</button></div>
+    <p class="hint totals" id="invoice-total-hint"></p>
     <label>Notes <input name="notes" maxlength="200" /></label>
     <p class="error" id="invoice-error"></p>
     <div class="dialog-actions">
@@ -167,53 +313,113 @@
   </form>
 </dialog>
 
-<dialog id="dialog-supplier">
-  <form id="form-supplier" class="form">
-    <h2>New supplier</h2>
+<!-- Customer / supplier -->
+<dialog id="dialog-party">
+  <form id="form-party" class="form">
+    <h2 id="party-dialog-title">New supplier</h2>
     <label>Name <input name="name" required maxlength="80" /></label>
     <label>Country <input name="country" maxlength="60" /></label>
     <label>Currency
-      <select name="currency" required>
-        <option value="GBP">GBP</option>
-        <option value="EUR">EUR</option>
-        <option value="USD">USD</option>
-      </select>
+      <select name="currency" required class="currency-select"></select>
     </label>
     <label>VAT number <input name="vat_number" maxlength="30" /></label>
-    <p class="error" id="supplier-error"></p>
+    <p class="error" id="party-error"></p>
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
-      <button type="submit" class="btn btn-primary">Save supplier</button>
+      <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </form>
 </dialog>
 
+<!-- Payment / receipt -->
 <dialog id="dialog-payment">
   <form id="form-payment" class="form">
-    <h2>Record payment</h2>
+    <h2 id="payment-dialog-title">Record payment</h2>
     <p id="payment-context" class="hint"></p>
-    <label>Payment date
-      <input name="payment_date" type="date" required />
-    </label>
-    <label>Amount (in invoice currency)
+    <div class="row">
+      <label>Date
+        <input name="payment_date" type="date" required />
+      </label>
+      <label>Bank account
+        <select name="bank_account" required id="payment-bank-select"></select>
+      </label>
+    </div>
+    <label><span id="payment-amount-label">Amount settled</span>
       <input name="amount" type="number" min="0.01" step="0.01" required />
     </label>
-    <label>Exchange rate on payment date (1 unit of invoice currency = ? GBP)
-      <input name="exchange_rate" type="number" min="0.0001" step="0.0001" required />
+    <label id="payment-bank-amount-wrap"><span id="payment-bank-amount-label">Amount through the bank</span>
+      <input name="bank_amount" type="number" min="0.01" step="0.01" />
+    </label>
+    <label id="payment-rate-wrap"><span id="payment-rate-label">Exchange rate</span>
+      <input name="bank_rate" type="number" min="0" step="any" />
     </label>
     <p class="hint" id="payment-fx-hint"></p>
     <label>Notes <input name="notes" maxlength="200" /></label>
     <p class="error" id="payment-error"></p>
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
-      <button type="submit" class="btn btn-primary">Save payment</button>
+      <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </form>
 </dialog>
 
-<dialog id="dialog-invoice-detail">
-  <div class="form" id="invoice-detail-body"></div>
-  <div class="dialog-actions" style="padding: 0 28px 24px;">
+<!-- Manual journal -->
+<dialog id="dialog-journal" class="wide">
+  <form id="form-journal" class="form">
+    <h2>New journal entry</h2>
+    <div class="row">
+      <label>Date <input name="journal_date" type="date" required /></label>
+      <label>Reference <input name="reference" maxlength="40" /></label>
+      <label>Currency <select name="currency" class="currency-select"></select></label>
+      <label>Rate (1 unit = ? GBP) <input name="exchange_rate" type="number" min="0" step="any" value="1" /></label>
+    </div>
+    <p class="hint" id="journal-rate-hint"></p>
+    <label>Description <input name="description" required maxlength="120" /></label>
+    <div class="table-wrap">
+      <table class="table lines-table" id="journal-lines">
+        <thead><tr><th>Ledger account</th><th>Line description</th><th class="num">Debit</th><th class="num">Credit</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div><button type="button" class="btn btn-small" id="btn-add-journal-line">+ Add line</button></div>
+    <p class="hint totals" id="journal-total-hint"></p>
+    <p class="error" id="journal-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Post journal</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Ledger account -->
+<dialog id="dialog-account">
+  <form id="form-account" class="form">
+    <h2 id="account-dialog-title">New account</h2>
+    <div class="row">
+      <label>Code <input name="code" required maxlength="10" /></label>
+      <label style="flex:2">Name <input name="name" required maxlength="80" /></label>
+    </div>
+    <label>Category
+      <select name="category" id="account-category-select" required></select>
+    </label>
+    <label id="account-currency-wrap">Bank account currency
+      <select name="bank_currency" class="currency-select"></select>
+    </label>
+    <label id="account-iban-wrap">IBAN (links CAMT statements automatically)
+      <input name="iban" maxlength="40" />
+    </label>
+    <p class="error" id="account-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save account</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Read-only detail (invoice or journal) -->
+<dialog id="dialog-detail" class="wide">
+  <div class="form" id="detail-body"></div>
+  <div class="dialog-actions">
     <button type="button" class="btn" data-close>Close</button>
   </div>
 </dialog>

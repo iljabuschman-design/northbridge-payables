@@ -187,3 +187,78 @@ dialog::backdrop { background: rgba(15, 20, 30, .45); }
 .detail-grid .k { color: var(--muted); }
 .section-title { font-weight: 700; margin: 14px 0 6px; font-size: 13.5px; }
 
+
+/* ---------- Additions: multi-line forms, bank, financials, setup ---------- */
+
+.tabs { flex-wrap: wrap; }
+.table-wrap { overflow-x: auto; }
+.muted { color: var(--muted); }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
+.ok-msg { color: var(--green); font-size: 13px; font-weight: 600; margin: 0; min-height: 16px; }
+.rates-line { margin: -8px 0 16px; }
+
+.grid-2.even { grid-template-columns: 1fr 1fr; }
+.panel-header.wrap { flex-wrap: wrap; gap: 12px; }
+.panel-header .btn-small { flex-shrink: 0; }
+
+table.table tbody tr.selected { background: var(--blue-bg); }
+table.table tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
+
+dialog.wide { width: min(900px, 96vw); }
+dialog .dialog-actions.inline { padding: 16px 0 0; }
+.form .row { flex-wrap: wrap; }
+.form .row label { min-width: 140px; }
+.form .totals { margin: 0; font-size: 13.5px; color: var(--text); }
+
+.lines-table td { padding: 5px 6px; vertical-align: middle; }
+.lines-table input, .lines-table select {
+  width: 100%;
+  font-size: 13.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+}
+.lines-table input.num { text-align: right; min-width: 90px; }
+.lines-table input.narrow { min-width: 60px; max-width: 80px; }
+.btn-icon { padding: 3px 9px; font-size: 15px; line-height: 1; }
+
+/* Bank */
+.upload-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px; }
+.upload-row label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.upload-row select, .upload-row input[type=file] { font-size: 13.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; }
+.post-cell { display: flex; flex-direction: column; gap: 6px; min-width: 260px; }
+.post-cell select, .post-cell input { font-size: 13px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; }
+.post-cell .p-settle { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.post-cell .p-settle input { width: 110px; text-align: right; }
+.post-cell [hidden] { display: none; }
+
+/* Journal source badges */
+.badge.src-manual { background: var(--blue-bg); color: var(--blue); }
+.badge.src-invoice { background: #f1ecfb; color: #5b3aa6; }
+.badge.src-payment { background: var(--green-bg); color: var(--green); }
+.badge.src-bank { background: var(--amber-bg); color: var(--amber); }
+.badge.src-opening { background: #eceff3; color: #475467; }
+
+/* Financial statements */
+.period-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.period-row label { font-size: 12.5px; font-weight: 600; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.period-row input[type=date] { font-size: 13.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; }
+.fin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.fin-grid .span-2 { grid-column: 1 / -1; }
+@media (max-width: 900px) { .fin-grid, .grid-2.even { grid-template-columns: 1fr; } }
+table.fin td { padding: 6px 10px; border-bottom: 1px solid #f0f2f5; }
+table.fin tr.section td { font-weight: 700; text-transform: uppercase; font-size: 11.5px; letter-spacing: .04em; color: var(--muted); padding-top: 16px; border-bottom: 2px solid var(--border); }
+table.fin tr.cat td { font-weight: 600; }
+table.fin tr.acct td { color: var(--muted); font-size: 12.5px; }
+table.fin tr.acct td:first-child { padding-left: 26px; }
+table.fin tr.sub td { font-weight: 700; border-top: 1px solid var(--text); background: #fafbfc; }
+table.fin tr.grand td { font-weight: 800; border-top: 2px solid var(--text); border-bottom: 3px double var(--text); background: var(--blue-bg); }
+.hide-detail table.fin tr.acct { display: none; }
+
+/* Setup */
+#accounts-table select { font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; max-width: 100%; }
+.fx-rates { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.check { cursor: pointer; }
+#bs-check, #cf-check { margin-top: 10px; }

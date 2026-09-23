@@ -3,12 +3,14 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
 
 const acct = require('./accounting');
+const fx = require('./fx');
+const bank = require('./bank');
 const { seedIfEmpty } = require('./seed');
 
 seedIfEmpty();
+fx.startScheduler();
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -35,7 +37,7 @@ function readBody(req) {
     let size = 0;
     req.on('data', (c) => {
       size += c.length;
-      if (size > 1_000_000) {
+      if (size > 10_000_000) {
         reject(Object.assign(new Error('Payload too large'), { status: 413 }));
         req.destroy();
         return;
@@ -72,80 +74,108 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+const json = (fn) => async (req, match, query) => fn(await readBody(req), match, query);
+
 const routes = [
+  { method: 'GET', pattern: /^\/api\/company$/, handler: async () => acct.getCompany() },
   {
     method: 'GET',
-    pattern: /^\/api\/company$/,
-    handler: async () => acct.getCompany(),
+    pattern: /^\/api\/meta$/,
+    handler: async () => ({ company: acct.getCompany(), currencies: acct.CURRENCIES, categories: acct.CATEGORIES }),
   },
-  {
-    method: 'GET',
-    pattern: /^\/api\/suppliers$/,
-    handler: async () => acct.listSuppliers(),
-  },
-  {
-    method: 'POST',
-    pattern: /^\/api\/suppliers$/,
-    handler: async (req) => {
-      const body = await readBody(req);
-      if (!body.name || !body.currency) throw acct.httpError(400, 'name and currency are required');
-      return acct.createSupplier(body);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/api\/invoices$/,
-    handler: async () => acct.listInvoices(),
-  },
-  {
-    method: 'POST',
-    pattern: /^\/api\/invoices$/,
-    handler: async (req) => {
-      const body = await readBody(req);
-      return acct.createInvoice(body);
-    },
-  },
+
+  // Chart of accounts
+  { method: 'GET', pattern: /^\/api\/accounts$/, handler: async () => acct.listAccounts() },
+  { method: 'POST', pattern: /^\/api\/accounts$/, handler: json((body) => acct.createAccount({ ...body, role: null })) },
+  { method: 'PUT', pattern: /^\/api\/accounts\/([^/]+)$/, handler: json((body, m) => acct.updateAccount(m[1], body)) },
+
+  // Customers & suppliers
+  { method: 'GET', pattern: /^\/api\/suppliers$/, handler: async () => acct.listParties('supplier') },
+  { method: 'POST', pattern: /^\/api\/suppliers$/, handler: json((body) => acct.createParty('supplier', body)) },
+  { method: 'GET', pattern: /^\/api\/customers$/, handler: async () => acct.listParties('customer') },
+  { method: 'POST', pattern: /^\/api\/customers$/, handler: json((body) => acct.createParty('customer', body)) },
+
+  // Purchase & sales invoices
+  { method: 'GET', pattern: /^\/api\/invoices$/, handler: async (req, m, q) => acct.listInvoices(q.get('type') || undefined) },
+  { method: 'POST', pattern: /^\/api\/invoices$/, handler: json((body) => acct.createInvoice(body)) },
   {
     method: 'GET',
     pattern: /^\/api\/invoices\/(\d+)$/,
-    handler: async (req, match) => {
-      const id = Number(match[1]);
-      const invoice = acct.getInvoice(id);
-      if (!invoice) throw acct.httpError(404, 'Invoice not found');
-      const payments = acct.listPaymentsForInvoice(id);
-      const ledger = acct.listLedgerEntries({ source_type: 'invoice', source_id: id });
-      const paymentLedger = payments.flatMap((p) => acct.listLedgerEntries({ source_type: 'payment', source_id: p.id }));
-      return { invoice, payments, ledger: [...ledger, ...paymentLedger] };
+    handler: async (req, m) => {
+      const detail = acct.invoiceDetail(Number(m[1]));
+      if (!detail) throw acct.httpError(404, 'Invoice not found');
+      return detail;
     },
   },
   {
     method: 'POST',
     pattern: /^\/api\/invoices\/(\d+)\/payments$/,
-    handler: async (req, match) => {
-      const body = await readBody(req);
-      body.invoice_id = Number(match[1]);
-      return acct.createPayment(body);
+    handler: json((body, m) => acct.createPayment({ ...body, invoice_id: Number(m[1]) })),
+  },
+
+  // Journals & ledger
+  { method: 'GET', pattern: /^\/api\/journals$/, handler: async () => acct.listJournals() },
+  { method: 'POST', pattern: /^\/api\/journals$/, handler: json((body) => acct.createManualJournal(body)) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/journals\/(\d+)$/,
+    handler: async (req, m) => {
+      const j = acct.getJournal(Number(m[1]));
+      if (!j) throw acct.httpError(404, 'Journal not found');
+      return j;
     },
   },
+  { method: 'GET', pattern: /^\/api\/ledger$/, handler: async () => acct.listLedgerEntries() },
+  { method: 'GET', pattern: /^\/api\/trial-balance$/, handler: async () => acct.trialBalance() },
+  { method: 'GET', pattern: /^\/api\/dashboard$/, handler: async () => acct.dashboardSummary() },
   {
     method: 'GET',
-    pattern: /^\/api\/ledger$/,
-    handler: async () => acct.listLedgerEntries(),
+    pattern: /^\/api\/reports$/,
+    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to') }),
   },
+
+  // Exchange rates (ECB)
   {
     method: 'GET',
-    pattern: /^\/api\/trial-balance$/,
-    handler: async () => acct.trialBalance(),
+    pattern: /^\/api\/fx\/rate$/,
+    handler: async (req, m, q) => {
+      const currency = q.get('currency');
+      const date = q.get('date');
+      if (!acct.CURRENCIES.includes(currency) || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+        throw acct.httpError(400, 'currency and date (YYYY-MM-DD) are required');
+      }
+      const rate = await fx.getRate(currency, date);
+      if (!rate) throw acct.httpError(404, `No ECB rate available for ${currency} on ${date}`);
+      return rate;
+    },
   },
+  { method: 'GET', pattern: /^\/api\/fx\/status$/, handler: async () => ({ latest: fx.latestRates(), ...fx.getStatus() }) },
+  {
+    method: 'POST',
+    pattern: /^\/api\/fx\/refresh$/,
+    handler: async () => {
+      await fx.updateLatest();
+      return { latest: fx.latestRates(), ...fx.getStatus() };
+    },
+  },
+
+  // Bank statements (CAMT)
+  { method: 'GET', pattern: /^\/api\/bank\/statements$/, handler: async () => bank.listStatements() },
+  { method: 'POST', pattern: /^\/api\/bank\/statements$/, handler: json((body) => bank.importStatement(body)) },
   {
     method: 'GET',
-    pattern: /^\/api\/dashboard$/,
-    handler: async () => acct.dashboardSummary(),
+    pattern: /^\/api\/bank\/statements\/(\d+)$/,
+    handler: async (req, m) => {
+      const s = bank.getStatement(Number(m[1]));
+      if (!s) throw acct.httpError(404, 'Statement not found');
+      return s;
+    },
   },
+  { method: 'POST', pattern: /^\/api\/bank\/lines\/(\d+)\/post$/, handler: json((body, m) => bank.postLine(Number(m[1]), body)) },
 ];
 
 const server = http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url);
+  const parsed = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith('/api/')) {
@@ -154,7 +184,7 @@ const server = http.createServer(async (req, res) => {
       const match = pathname.match(route.pattern);
       if (!match) continue;
       try {
-        const result = await route.handler(req, match);
+        const result = await route.handler(req, match, parsed.searchParams);
         return sendJson(res, 200, result);
       } catch (err) {
         const status = err.status || 500;

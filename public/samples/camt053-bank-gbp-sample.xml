@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sample CAMT.053 statement for Northbridge Trading Ltd's GBP account (demo data). -->
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>NB-STMT-20260915</MsgId>
+      <CreDtTm>2026-09-15T18:00:00</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>STMT-GBP-2026-09-A</Id>
+      <CreDtTm>2026-09-15T18:00:00</CreDtTm>
+      <FrToDt>
+        <FrDtTm>2026-09-01T00:00:00</FrDtTm>
+        <ToDtTm>2026-09-15T23:59:59</ToDtTm>
+      </FrToDt>
+      <Acct>
+        <Id><IBAN>GB29NWBK60161331926819</IBAN></Id>
+        <Ccy>GBP</Ccy>
+        <Nm>Northbridge Trading Ltd</Nm>
+      </Acct>
+      <Ntry>
+        <Amt Ccy="GBP">11400.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-03</Dt></BookgDt>
+        <ValDt><Dt>2026-09-03</Dt></ValDt>
+        <AcctSvcrRef>NWB-260903-0001</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Dbtr><Nm>Harlow Retail Group Ltd</Nm></Dbtr></RltdPties>
+          <RmtInf><Ustrd>Invoice NB-S-004</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="GBP">2160.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-04</Dt></BookgDt>
+        <ValDt><Dt>2026-09-04</Dt></ValDt>
+        <AcctSvcrRef>NWB-260904-0002</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Cdtr><Nm>Fenwick &amp; Doyle Ltd</Nm></Cdtr></RltdPties>
+          <RmtInf><Ustrd>FD-1050</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="GBP">3080.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-08</Dt></BookgDt>
+        <ValDt><Dt>2026-09-08</Dt></ValDt>
+        <AcctSvcrRef>NWB-260908-0003</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Cdtr><Nm>Atlas Fasteners Inc.</Nm></Cdtr></RltdPties>
+          <RmtInf><Ustrd>AF-7781 balance USD 4000.00 converted</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="GBP">1000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-10</Dt></BookgDt>
+        <ValDt><Dt>2026-09-10</Dt></ValDt>
+        <AcctSvcrRef>NWB-260910-0004</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Dbtr><Nm>HMRC</Nm></Dbtr></RltdPties>
+          <RmtInf><Ustrd>VAT repayment</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="GBP">6500.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-12</Dt></BookgDt>
+        <ValDt><Dt>2026-09-12</Dt></ValDt>
+        <AcctSvcrRef>NWB-260912-0005</AcctSvcrRef>
+        <NtryDtls><TxDtls>
+          <RltdPties><Cdtr><Nm>Northbridge Payroll</Nm></Cdtr></RltdPties>
+          <RmtInf><Ustrd>Salaries September 2026</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="GBP">18.50</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <Sts>BOOK</Sts>
+        <BookgDt><Dt>2026-09-15</Dt></BookgDt>
+        <ValDt><Dt>2026-09-15</Dt></ValDt>
+        <AcctSvcrRef>NWB-260915-0006</AcctSvcrRef>
+        <AddtlNtryInf>Account maintenance fee August</AddtlNtryInf>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>
