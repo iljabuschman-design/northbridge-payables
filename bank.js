@@ -316,4 +316,40 @@ async function importAndSettle(body) {
   return results;
 }
 
-module.exports = { parseCamt, importStatement, importAndSettle, autoSettleStatement, listStatements, getStatement, postLine };
+// ---------- Simulated bank payment (Pay button) ----------
+
+/**
+ * Pay (part of) a purchase invoice through the simulated bank window. No
+ * money moves: the payment is booked as if the bank executed it today. If the
+ * bank account's currency differs from the invoice's, the bank converts at
+ * today's ECB rates; any difference with the booked invoice rate is a
+ * realised FX gain/loss, as with any other payment.
+ */
+async function simulatedPayment({ invoice_id, bank_account, amount, bank_name }) {
+  const invoice = acct.getInvoice(Number(invoice_id));
+  if (!invoice || invoice.type !== 'purchase') throw httpError(400, 'Choose an open purchase invoice');
+  const bank = acct.getAccount(bank_account);
+  if (!bank || !bank.bank_currency) throw httpError(400, 'Choose the account to pay from');
+  amount = round2(Number(amount));
+  if (!(amount > 0)) throw httpError(400, 'Amount must be more than zero');
+
+  const date = new Date().toISOString().slice(0, 10);
+  const invRate = await fx.getRate(invoice.currency, date);
+  const bankRate = await fx.getRate(bank.bank_currency, date);
+  if (!invRate || !bankRate) throw httpError(503, 'No exchange rate available to convert this payment');
+  const bankAmount = bank.bank_currency === invoice.currency ? amount : round2((amount * invRate.rate) / bankRate.rate);
+  const reference = `SIM-${date.replace(/-/g, '')}-${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
+
+  const res = acct.createPayment({
+    invoice_id: invoice.id,
+    payment_date: date,
+    amount,
+    bank_account: bank.code,
+    bank_amount: bankAmount,
+    bank_rate: bankRate.rate,
+    notes: `Paid via ${bank_name || 'bank'} (simulated), transaction ${reference}`,
+  });
+  return { ...res, transaction_reference: reference, bank_amount: bankAmount, bank_currency: bank.bank_currency };
+}
+
+module.exports = { parseCamt, importStatement, importAndSettle, autoSettleStatement, listStatements, getStatement, postLine, simulatedPayment };

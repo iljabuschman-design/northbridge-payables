@@ -1775,23 +1775,23 @@ assetForm.addEventListener('submit', async (e) => {
 
 // ---------- Pay a purchase invoice through the company's bank ----------
 
-// Main UK business banks and payment apps. The link opens the bank's own site, where the user logs in.
+// Main UK business banks and payment apps, offered in the (simulated) pay window.
 const UK_BANKS = [
-  { name: 'Barclays', url: 'https://www.barclays.co.uk' },
-  { name: 'HSBC UK', url: 'https://www.hsbc.co.uk' },
-  { name: 'Lloyds Bank', url: 'https://www.lloydsbank.com' },
-  { name: 'NatWest', url: 'https://www.natwest.com' },
-  { name: 'Royal Bank of Scotland', url: 'https://www.rbs.co.uk' },
-  { name: 'Santander UK', url: 'https://www.santander.co.uk' },
-  { name: 'Bank of Scotland', url: 'https://www.bankofscotland.co.uk' },
-  { name: 'TSB', url: 'https://www.tsb.co.uk' },
-  { name: 'Metro Bank', url: 'https://www.metrobankonline.co.uk' },
-  { name: 'Nationwide', url: 'https://www.nationwide.co.uk' },
-  { name: 'Starling Bank', url: 'https://www.starlingbank.com' },
-  { name: 'Monzo', url: 'https://monzo.com' },
-  { name: 'Tide', url: 'https://www.tide.co' },
-  { name: 'Revolut Business', url: 'https://business.revolut.com' },
-  { name: 'Wise Business', url: 'https://wise.com' },
+  { name: 'Barclays' },
+  { name: 'HSBC UK' },
+  { name: 'Lloyds Bank' },
+  { name: 'NatWest' },
+  { name: 'Royal Bank of Scotland' },
+  { name: 'Santander UK' },
+  { name: 'Bank of Scotland' },
+  { name: 'TSB' },
+  { name: 'Metro Bank' },
+  { name: 'Nationwide' },
+  { name: 'Starling Bank' },
+  { name: 'Monzo' },
+  { name: 'Tide' },
+  { name: 'Revolut Business' },
+  { name: 'Wise Business' },
 ];
 
 function bankDetailsText(p) {
@@ -1809,64 +1809,233 @@ function rememberedBank() {
   }
 }
 
+/**
+ * Simulated bank payment window: review -> bank login -> authorise -> done.
+ * Everything happens inside the app; no real bank is contacted and no money
+ * moves. Approving books the payment on the invoice.
+ */
+const pay = { inv: null, supplier: null, amount: 0, from: null, bank: null, step: 'review', rates: {}, result: null, error: '' };
+
 async function openPayDialog(inv) {
-  await loadParties();
-  const s = SUPPLIERS.find((x) => x.id === inv.party_id) || {};
-  const field = (label, value) =>
-    value
-      ? `<div class="pay-field"><span class="k">${esc(label)}</span><strong>${esc(value)}</strong><button type="button" class="btn btn-small copy-btn" data-copy="${esc(value)}">Copy</button></div>`
-      : '';
-  const ukDomestic = inv.currency === BASE && s.sort_code && s.account_number;
-  document.getElementById('pay-title').textContent = `Pay ${inv.invoice_number} - ${inv.party_name}`;
-  document.getElementById('pay-details').innerHTML = `
-    <div class="pay-amount">${fmt(inv.remaining_amount, inv.currency)} <span class="muted">${inv.currency !== BASE ? `(international payment in ${inv.currency})` : 'to pay'}</span></div>
-    <div class="pay-fields">
-      ${field('Payee', s.name)}
-      ${ukDomestic || !s.iban ? field('Sort code', s.sort_code) + field('Account number', s.account_number) : ''}
-      ${field('IBAN', s.iban)}
-      ${field('BIC / SWIFT', s.bic)}
-      ${field('Amount', inv.remaining_amount.toFixed(2))}
-      ${field('Payment reference', inv.invoice_number)}
-    </div>
-    ${bankDetailsText(s) ? '' : '<p class="error">No bank details for this supplier yet - add them under Setup → Suppliers → Edit.</p>'}`;
-  document.querySelectorAll('#pay-details .copy-btn').forEach((btn) =>
-    btn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(btn.dataset.copy);
-        btn.textContent = 'Copied';
-        setTimeout(() => (btn.textContent = 'Copy'), 1200);
-      } catch {
-        btn.textContent = 'Select & copy';
-      }
-    })
-  );
-  renderBankGrid(rememberedBank());
+  await Promise.all([loadParties(), loadAccounts()]);
+  const banks = bankAccounts();
+  Object.assign(pay, {
+    inv,
+    supplier: SUPPLIERS.find((x) => x.id === inv.party_id) || { name: inv.party_name },
+    amount: inv.remaining_amount,
+    from: (banks.find((b) => b.bank_currency === inv.currency) || banks.find((b) => b.bank_currency === BASE) || banks[0]).code,
+    bank: rememberedBank(),
+    step: 'review',
+    rates: {},
+    result: null,
+    error: '',
+  });
   document.getElementById('dialog-pay').showModal();
+  await loadPayRates();
+  renderPay();
 }
 
-function renderBankGrid(selected) {
-  const grid = document.getElementById('bank-grid');
-  grid.innerHTML = UK_BANKS.map(
-    (b) => `<button type="button" class="bank-btn ${b.name === selected ? 'selected' : ''}" data-bank="${esc(b.name)}">
-      <span class="bank-mark">${esc(b.name.split(' ').map((w) => w[0]).join('').slice(0, 3))}</span>${esc(b.name)}</button>`
-  ).join('');
-  grid.querySelectorAll('.bank-btn').forEach((btn) =>
-    btn.addEventListener('click', () => {
-      try {
-        localStorage.setItem('nb-bank', btn.dataset.bank);
-      } catch {
-        /* remembering the choice is optional */
-      }
-      renderBankGrid(btn.dataset.bank);
-    })
-  );
-  const bank = UK_BANKS.find((b) => b.name === selected);
-  const link = document.getElementById('pay-open-bank');
-  link.hidden = !bank;
-  if (bank) {
-    link.href = bank.url;
-    link.textContent = `Open ${bank.name} ↗`;
+async function loadPayRates() {
+  const date = today();
+  for (const c of META.currencies) {
+    if (pay.rates[c]) continue;
+    try {
+      pay.rates[c] = c === BASE ? 1 : (await api(`/api/fx/rate?currency=${c}&date=${date}`)).rate;
+    } catch {
+      pay.rates[c] = null;
+    }
   }
+}
+
+const payFromAccount = () => ACCOUNTS.find((a) => a.code === pay.from);
+
+/** What leaves the chosen account, converted by the bank at today's ECB rates. */
+function payDebit() {
+  const acc = payFromAccount();
+  if (acc.bank_currency === pay.inv.currency) return pay.amount;
+  const r1 = pay.rates[pay.inv.currency];
+  const r2 = pay.rates[acc.bank_currency];
+  return r1 && r2 ? round2((pay.amount * r1) / r2) : null;
+}
+
+function bankInitials(name) {
+  return name.split(' ').map((w) => w[0]).join('').slice(0, 3);
+}
+
+function renderPay() {
+  const body = document.getElementById('pay-body');
+  const inv = pay.inv;
+  const s = pay.supplier;
+  const acc = payFromAccount();
+  const debit = payDebit();
+  const payeeLines = [
+    s.sort_code && s.account_number ? `Sort code ${s.sort_code} · Account ${s.account_number}` : '',
+    s.iban ? `IBAN ${s.iban}${s.bic ? ` · BIC ${s.bic}` : ''}` : '',
+  ].filter(Boolean);
+  const conversion =
+    acc.bank_currency !== inv.currency && debit !== null
+      ? `<p class="hint">Your bank converts ${fmt(pay.amount, inv.currency)} into about <strong>${fmt(debit, acc.bank_currency)}</strong> at today's ECB rate. Any difference with the invoice's booked rate is posted as a realised FX gain or loss.</p>`
+      : '';
+  const bankHeader = (subtitle) => `
+    <div class="sim-bank-bar">
+      <span class="bank-mark">${esc(bankInitials(pay.bank || 'Bank'))}</span>
+      <div><div class="sim-bank-name">${esc(pay.bank)}</div><div class="sim-bank-sub">${esc(subtitle)}</div></div>
+      <span class="sim-badge">Simulated bank · no real money</span>
+    </div>`;
+  const summary = () => `
+    <div class="pay-fields">
+      <div class="pay-field"><span class="k">From</span><strong>Northbridge Trading Ltd · ${esc(acc.name)}${acc.iban ? ` · ${esc(acc.iban)}` : ''}</strong></div>
+      <div class="pay-field"><span class="k">To</span><strong>${esc(s.name)}${payeeLines.length ? `<div class="muted">${esc(payeeLines.join(' · '))}</div>` : ''}</strong></div>
+      <div class="pay-field"><span class="k">Amount</span><strong>${fmt(pay.amount, inv.currency)}${acc.bank_currency !== inv.currency && debit !== null ? ` <span class="muted">(${fmt(debit, acc.bank_currency)} from your account)</span>` : ''}</strong></div>
+      <div class="pay-field"><span class="k">Reference</span><strong>${esc(inv.invoice_number)}</strong></div>
+      <div class="pay-field"><span class="k">Date</span><strong>${esc(today())} (immediate payment)</strong></div>
+    </div>`;
+  const error = pay.error ? `<p class="error">${esc(pay.error)}</p>` : '';
+
+  if (pay.step === 'review') {
+    const banks = bankAccounts();
+    body.innerHTML = `
+      <div class="form">
+        <h2>Pay ${esc(inv.invoice_number)} - ${esc(inv.party_name)}</h2>
+        <p class="hint">Open: ${fmt(inv.remaining_amount, inv.currency)} of ${fmt(inv.total_amount, inv.currency)}.</p>
+        <div class="row">
+          <label>Amount (${inv.currency})<input id="pay-amount" type="number" min="0.01" step="0.01" max="${inv.remaining_amount}" value="${pay.amount.toFixed(2)}" /></label>
+          <label>Pay from<select id="pay-from">${banks.map((b) => `<option value="${esc(b.code)}" ${b.code === pay.from ? 'selected' : ''}>${esc(accountLabel(b))} (${b.bank_currency})</option>`).join('')}</select></label>
+        </div>
+        ${conversion}
+        ${payeeLines.length ? '' : '<p class="error">This supplier has no bank details yet - add them under Setup → Suppliers → Edit before paying.</p>'}
+        <div class="section-title">Your bank</div>
+        <div class="bank-grid">${UK_BANKS.map(
+          (b) => `<button type="button" class="bank-btn ${b.name === pay.bank ? 'selected' : ''}" data-bank="${esc(b.name)}"><span class="bank-mark">${esc(bankInitials(b.name))}</span>${esc(b.name)}</button>`
+        ).join('')}</div>
+        ${error}
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-pay="cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" data-pay="continue" ${pay.bank && payeeLines.length ? '' : 'disabled'}>Continue to ${esc(pay.bank || 'bank')}</button>
+      </div>`;
+    body.querySelector('#pay-amount').addEventListener('input', (e) => {
+      pay.amount = round2(parseFloat(e.target.value) || 0);
+      renderPayHintOnly();
+    });
+    body.querySelector('#pay-from').addEventListener('change', (e) => {
+      pay.from = e.target.value;
+      renderPay();
+    });
+    body.querySelectorAll('.bank-btn').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        pay.bank = btn.dataset.bank;
+        try {
+          localStorage.setItem('nb-bank', pay.bank);
+        } catch {
+          /* remembering the bank is optional */
+        }
+        renderPay();
+      })
+    );
+  } else if (pay.step === 'login') {
+    body.innerHTML = `
+      <div class="sim-bank">
+        ${bankHeader('Business online banking')}
+        <div class="sim-bank-body">
+          <h2>Log in to approve a payment</h2>
+          <p class="hint">Northbridge Books is asking to make a payment from your account. This is a simulation: there is no real login, so never enter real bank details here.</p>
+          <div class="pay-fields">
+            <div class="pay-field"><span class="k">Customer</span><strong>Northbridge Trading Ltd (demo)</strong></div>
+            <div class="pay-field"><span class="k">Security</span><strong>Demo passcode accepted automatically</strong></div>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-pay="back">Back</button>
+        <button type="button" class="btn btn-primary" data-pay="login">Log in (demo)</button>
+      </div>`;
+  } else if (pay.step === 'authorise') {
+    body.innerHTML = `
+      <div class="sim-bank">
+        ${bankHeader('Approve payment')}
+        <div class="sim-bank-body">
+          <h2>Check and approve this payment</h2>
+          ${summary()}
+          ${error}
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-pay="cancel">Cancel payment</button>
+        <button type="button" class="btn btn-primary" data-pay="approve">Approve payment</button>
+      </div>`;
+  } else if (pay.step === 'processing') {
+    body.innerHTML = `
+      <div class="sim-bank">
+        ${bankHeader('Approve payment')}
+        <div class="sim-bank-body center"><div class="spinner"></div><p>Sending payment…</p></div>
+      </div>`;
+  } else if (pay.step === 'done') {
+    const r = pay.result;
+    const fxAmt = r.payment.fx_gain_loss;
+    body.innerHTML = `
+      <div class="sim-bank">
+        ${bankHeader('Payment sent')}
+        <div class="sim-bank-body center">
+          <div class="done-mark">✓</div>
+          <h2>Payment sent</h2>
+          <p>${fmt(r.payment.amount, inv.currency)} to ${esc(s.name)}, reference ${esc(inv.invoice_number)}.</p>
+          <p class="hint">Bank transaction ${esc(r.transaction_reference)} · ${fmt(r.bank_amount, r.bank_currency)} from ${esc(acc.name)}</p>
+          <p>Invoice ${esc(inv.invoice_number)} is now <strong>${esc(r.invoice.status)}</strong>${fxAmt ? `, with a realised FX ${fxAmt > 0 ? 'gain' : 'loss'} of ${fmt(Math.abs(fxAmt), BASE)}` : ''}.</p>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-primary" data-pay="close">Done</button>
+      </div>`;
+  }
+
+  body.querySelectorAll('[data-pay]').forEach((btn) => btn.addEventListener('click', () => payAction(btn.dataset.pay)));
+}
+
+// Update only the conversion hint while typing, so the amount field keeps focus.
+function renderPayHintOnly() {
+  const inv = pay.inv;
+  const acc = payFromAccount();
+  const debit = payDebit();
+  const hint = document.querySelector('#pay-body .row + .hint');
+  if (hint && acc.bank_currency !== inv.currency && debit !== null) {
+    hint.innerHTML = `Your bank converts ${fmt(pay.amount, inv.currency)} into about <strong>${fmt(debit, acc.bank_currency)}</strong> at today's ECB rate. Any difference with the invoice's booked rate is posted as a realised FX gain or loss.`;
+  }
+}
+
+async function payAction(action) {
+  pay.error = '';
+  if (action === 'cancel' || action === 'close') {
+    document.getElementById('dialog-pay').close();
+    if (action === 'close') refreshActive();
+    return;
+  }
+  if (action === 'continue') {
+    if (!(pay.amount > 0) || pay.amount > pay.inv.remaining_amount + 0.005) {
+      pay.error = `Enter an amount between 0.01 and ${pay.inv.remaining_amount.toFixed(2)} ${pay.inv.currency}.`;
+    } else {
+      pay.step = 'login';
+    }
+  } else if (action === 'back') {
+    pay.step = 'review';
+  } else if (action === 'login') {
+    pay.step = 'authorise';
+  } else if (action === 'approve') {
+    pay.step = 'processing';
+    renderPay();
+    try {
+      const [result] = await Promise.all([
+        post(`/api/invoices/${pay.inv.id}/simulated-payment`, { bank_account: pay.from, amount: pay.amount, bank_name: pay.bank }),
+        new Promise((r) => setTimeout(r, 900)), // a short pause, like a real bank confirming
+      ]);
+      pay.result = result;
+      pay.step = 'done';
+    } catch (err) {
+      pay.error = err.message;
+      pay.step = 'authorise';
+    }
+  }
+  renderPay();
 }
 
 // ---------- Dialog wiring & init ----------

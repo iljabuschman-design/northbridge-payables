@@ -145,6 +145,11 @@ const routes = [
     pattern: /^\/api\/invoices\/(\d+)\/payments$/,
     handler: json((body, m) => acct.createPayment({ ...body, invoice_id: Number(m[1]) })),
   },
+  {
+    method: 'POST',
+    pattern: /^\/api\/invoices\/(\d+)\/simulated-payment$/,
+    handler: json((body, m) => bank.simulatedPayment({ ...body, invoice_id: Number(m[1]) })),
+  },
 
   // Journals & ledger
   { method: 'GET', pattern: /^\/api\/journals$/, handler: async () => acct.listJournals() },

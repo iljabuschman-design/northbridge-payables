@@ -330,3 +330,20 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 @media (max-width: 600px) { .pay-field { grid-template-columns: 1fr auto; } .pay-field .k { grid-column: 1 / -1; } }
 #assets-table td:nth-child(1), #assets-table td:nth-child(5), #assets-table td:nth-child(11), #journals-table td:nth-child(1), #journals-table td:nth-child(2) { white-space: nowrap; }
 #periods-table td:first-child .muted { white-space: nowrap; }
+
+/* Simulated bank pay window */
+.pay-dialog .form { padding-bottom: 0; }
+.bank-btn:disabled, .btn:disabled { opacity: .5; cursor: not-allowed; }
+.sim-bank { margin: 0; }
+.sim-bank-bar { display: flex; align-items: center; gap: 12px; background: #1f2937; color: #fff; padding: 16px 24px; border-radius: 12px 12px 0 0; flex-wrap: wrap; }
+.sim-bank-bar .bank-mark { background: #fff; color: #1f2937; }
+.sim-bank-name { font-weight: 700; font-size: 15px; }
+.sim-bank-sub { font-size: 12px; opacity: .75; }
+.sim-badge { margin-left: auto; background: #fbbf24; color: #1f2937; font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 20px; text-transform: uppercase; letter-spacing: .03em; }
+.sim-bank-body { padding: 20px 28px 8px; display: flex; flex-direction: column; gap: 12px; }
+.sim-bank-body h2 { margin: 0; font-size: 17px; }
+.sim-bank-body.center { align-items: center; text-align: center; padding: 32px 28px 16px; }
+.sim-bank-body p { margin: 0; }
+.done-mark { width: 52px; height: 52px; border-radius: 50%; background: var(--green-bg); color: var(--green); font-size: 28px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+.spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--brand); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
