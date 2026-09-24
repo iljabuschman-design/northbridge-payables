@@ -347,3 +347,21 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .done-mark { width: 52px; height: 52px; border-radius: 50%; background: var(--green-bg); color: var(--green); font-size: 28px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
 .spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--brand); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Entities, account links, editing */
+.brand { flex-wrap: wrap; }
+.entity-picker { display: flex; align-items: center; gap: 8px; margin-left: 16px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.entity-picker select { font-size: 13.5px; font-weight: 600; text-transform: none; letter-spacing: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--blue-bg); color: var(--brand); font-family: inherit; }
+.entity-tag { display: inline-block; font-size: 10.5px; font-weight: 800; letter-spacing: .03em; padding: 1px 6px; border-radius: 5px; background: #eceff3; color: #475467; }
+.entity-note { margin: -4px 0 12px; }
+.entity-note:empty { display: none; }
+a.acct-link { color: var(--brand); text-decoration: none; }
+a.acct-link:hover { text-decoration: underline; }
+table.fin tr.acct a.acct-link { color: inherit; }
+table.fin tr.acct a.acct-link:hover { color: var(--brand); }
+.back-link { display: inline-block; margin-bottom: 8px; color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 600; }
+.back-link:hover { color: var(--brand); }
+.badge.edited { background: var(--amber-bg); color: var(--amber); font-size: 10.5px; }
+.history { margin: 0; padding-left: 18px; font-size: 13px; }
+.history li { margin: 2px 0; }
+select:disabled { opacity: .7; }

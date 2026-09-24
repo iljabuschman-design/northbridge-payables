@@ -88,8 +88,10 @@ const routes = [
       currencies: acct.CURRENCIES,
       categories: acct.CATEGORIES,
       asset_types: Object.entries(assets.ASSET_TYPES).map(([key, t]) => ({ key, name: t.name })),
+      entities: acct.listEntities(),
     }),
   },
+  { method: 'GET', pattern: /^\/api\/entities$/, handler: async () => acct.listEntities() },
 
   // Cost centres
   { method: 'GET', pattern: /^\/api\/cost-centers$/, handler: async () => acct.listCostCenters() },
@@ -102,7 +104,7 @@ const routes = [
   { method: 'POST', pattern: /^\/api\/periods\/(\d{4}-\d{2})\/reopen$/, handler: async (req, m) => acct.setPeriodStatus(m[1], 'open') },
 
   // Fixed assets
-  { method: 'GET', pattern: /^\/api\/assets$/, handler: async () => ({ assets: assets.listAssets(), depreciation: assets.getStatus() }) },
+  { method: 'GET', pattern: /^\/api\/assets$/, handler: async (req, m, q) => ({ assets: assets.listAssets(q.get('entity')), depreciation: assets.getStatus() }) },
   { method: 'POST', pattern: /^\/api\/assets$/, handler: json((body) => assets.createAsset(body)) },
   {
     method: 'GET',
@@ -116,7 +118,13 @@ const routes = [
   { method: 'POST', pattern: /^\/api\/assets\/depreciation$/, handler: json((body) => assets.runDepreciation(body.period)) },
 
   // Chart of accounts
-  { method: 'GET', pattern: /^\/api\/accounts$/, handler: async () => acct.listAccounts() },
+  { method: 'GET', pattern: /^\/api\/accounts$/, handler: async (req, m, q) => acct.listAccounts(q.get('entity')) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/accounts\/([^/]+)\/detail$/,
+    handler: async (req, m, q) =>
+      acct.accountDetail(decodeURIComponent(m[1]), { from: q.get('from'), to: q.get('to'), entity_id: q.get('entity'), cost_center: q.get('cost_center') || null }),
+  },
   { method: 'POST', pattern: /^\/api\/accounts$/, handler: json((body) => acct.createAccount({ ...body, role: null })) },
   { method: 'PUT', pattern: /^\/api\/accounts\/([^/]+)$/, handler: json((body, m) => acct.updateAccount(m[1], body)) },
 
@@ -129,7 +137,7 @@ const routes = [
   { method: 'PUT', pattern: /^\/api\/customers\/(\d+)$/, handler: json((body, m) => acct.updateParty('customer', Number(m[1]), body)) },
 
   // Purchase & sales invoices
-  { method: 'GET', pattern: /^\/api\/invoices$/, handler: async (req, m, q) => acct.listInvoices(q.get('type') || undefined) },
+  { method: 'GET', pattern: /^\/api\/invoices$/, handler: async (req, m, q) => acct.listInvoices(q.get('type') || null, q.get('entity')) },
   { method: 'POST', pattern: /^\/api\/invoices$/, handler: json((body) => acct.createInvoice(body)) },
   {
     method: 'GET',
@@ -152,7 +160,8 @@ const routes = [
   },
 
   // Journals & ledger
-  { method: 'GET', pattern: /^\/api\/journals$/, handler: async () => acct.listJournals() },
+  { method: 'GET', pattern: /^\/api\/journals$/, handler: async (req, m, q) => acct.listJournals(q.get('entity')) },
+  { method: 'PUT', pattern: /^\/api\/journals\/(\d+)$/, handler: json((body, m) => acct.editJournal(Number(m[1]), body)) },
   { method: 'POST', pattern: /^\/api\/journals$/, handler: json((body) => acct.createManualJournal(body)) },
   {
     method: 'GET',
@@ -163,20 +172,20 @@ const routes = [
       return j;
     },
   },
-  { method: 'GET', pattern: /^\/api\/ledger$/, handler: async () => acct.listLedgerEntries() },
-  { method: 'GET', pattern: /^\/api\/trial-balance$/, handler: async () => acct.trialBalance() },
-  { method: 'GET', pattern: /^\/api\/dashboard$/, handler: async () => acct.dashboardSummary() },
+  { method: 'GET', pattern: /^\/api\/ledger$/, handler: async (req, m, q) => acct.listLedgerEntries(q.get('entity')) },
+  { method: 'GET', pattern: /^\/api\/trial-balance$/, handler: async (req, m, q) => acct.trialBalance(q.get('entity')) },
+  { method: 'GET', pattern: /^\/api\/dashboard$/, handler: async (req, m, q) => acct.dashboardSummary(q.get('entity')) },
   {
     method: 'GET',
     pattern: /^\/api\/reports$/,
-    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to'), cost_center: q.get('cost_center') || null }),
+    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to'), cost_center: q.get('cost_center') || null, entity_id: q.get('entity') }),
   },
   {
     method: 'GET',
     pattern: /^\/api\/reports\/cost-centers$/,
-    handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to') }),
+    handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }),
   },
-  { method: 'GET', pattern: /^\/api\/kpis$/, handler: async (req, m, q) => acct.kpis({ from: q.get('from'), to: q.get('to') }) },
+  { method: 'GET', pattern: /^\/api\/kpis$/, handler: async (req, m, q) => acct.kpis({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }) },
 
   // Exchange rates (ECB)
   {
@@ -204,7 +213,7 @@ const routes = [
   },
 
   // Bank statements (CAMT)
-  { method: 'GET', pattern: /^\/api\/bank\/statements$/, handler: async () => bank.listStatements() },
+  { method: 'GET', pattern: /^\/api\/bank\/statements$/, handler: async (req, m, q) => bank.listStatements(q.get('entity')) },
   { method: 'POST', pattern: /^\/api\/bank\/statements$/, handler: json((body) => bank.importAndSettle(body)) },
   {
     method: 'POST',

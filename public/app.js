@@ -41,7 +41,13 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Selected entity in the top bar ('' = all entities). Every GET is scoped to it.
+let CURRENT_ENTITY = '';
+
 async function api(pathname, opts = {}) {
+  if (!opts.method && CURRENT_ENTITY && pathname.startsWith('/api/')) {
+    pathname += `${pathname.includes('?') ? '&' : '?'}entity=${CURRENT_ENTITY}`;
+  }
   const res = await fetch(pathname, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
@@ -52,6 +58,31 @@ const post = (pathname, body, method = 'POST') => api(pathname, { method, body: 
 
 function accountLabel(a) {
   return `${a.code} ${a.name}`;
+}
+
+/** An account code + name that opens the account overview. */
+function acctLink(code, name) {
+  if (!code) return esc(name || '');
+  return `<a class="acct-link" href="#account/${encodeURIComponent(code)}">${esc(code)} ${esc(name || '')}</a>`;
+}
+
+/** Accounts an entity may post to: shared ones plus its own. */
+const forEntity = (entityId) => (a) => !a.entity_id || String(a.entity_id) === String(entityId);
+
+const entityName = (id) => ((META.entities || []).find((e) => String(e.id) === String(id)) || {}).name || '';
+const entityCode = (id) => ((META.entities || []).find((e) => String(e.id) === String(id)) || {}).code || '';
+
+/** Fill an entity select in a form; defaults to the entity chosen in the top bar. */
+function fillEntityField(select, selected) {
+  const value = String(selected || CURRENT_ENTITY || (META.entities[0] || {}).id);
+  select.innerHTML = META.entities.map((e) => `<option value="${e.id}" ${String(e.id) === value ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+}
+
+function updateEntityNotes() {
+  const note = CURRENT_ENTITY
+    ? `Showing ${entityName(CURRENT_ENTITY)}.`
+    : 'Showing all entities added together. Intercompany balances, the management fee and Holding’s investment in Trading are not eliminated, so this is not a consolidation.';
+  document.querySelectorAll('.entity-note').forEach((el) => (el.textContent = note));
 }
 
 function accountOptions(filter = () => true, selected) {
@@ -187,6 +218,14 @@ const LOADERS = {
 };
 
 function showTab(name) {
+  updateEntityNotes();
+  if (name.startsWith('account/')) {
+    const code = decodeURIComponent(name.slice(8));
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== 'view-account'));
+    loadAccountView(code).catch((err) => console.error(err));
+    return;
+  }
   if (!document.getElementById(`view-${name}`)) name = 'dashboard';
   if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -194,14 +233,19 @@ function showTab(name) {
   if (LOADERS[name]) LOADERS[name]().catch((err) => console.error(err));
 }
 
+// Account links are plain #account/<code> links; following one closes any open dialog.
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'dashboard'));
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.acct-link')) document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+});
+
 document.getElementById('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab');
   if (btn) showTab(btn.dataset.tab);
 });
 
 function refreshActive() {
-  const active = document.querySelector('.tab.active');
-  if (active) showTab(active.dataset.tab);
+  showTab(location.hash.slice(1) || 'dashboard');
 }
 
 // ---------- Dashboard ----------
@@ -251,7 +295,7 @@ async function loadDashboard() {
     : 'Trial balance is OUT of balance - check the ledger.';
   tbStatus.className = 'tb-status ' + (d.trial_balance_balanced ? 'ok' : 'bad');
   document.querySelector('#tb-mini-table tbody').innerHTML = d.trial_balance
-    .map((r) => `<tr><td>${esc(r.account_code)} ${esc(r.account_name)}</td><td class="num">${fmt(r.debit)}</td><td class="num">${fmt(r.credit)}</td></tr>`)
+    .map((r) => `<tr><td>${acctLink(r.account_code, r.account_name)}</td><td class="num">${fmt(r.debit)}</td><td class="num">${fmt(r.credit)}</td></tr>`)
     .join('');
 }
 
@@ -262,7 +306,7 @@ async function loadInvoices(type) {
   const table = document.getElementById(type === 'sale' ? 'sales-table' : 'purchases-table');
   table.innerHTML = `
     <thead><tr>
-      <th>${type === 'sale' ? 'Customer' : 'Supplier'}</th><th>Invoice #</th><th>Date</th><th>Ccy</th>
+      <th>Entity</th><th>${type === 'sale' ? 'Customer' : 'Supplier'}</th><th>Invoice #</th><th>Date</th><th>Ccy</th>
       <th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th>
       <th class="num">Rate</th><th class="num">Total (GBP)</th>
       <th class="num">${type === 'sale' ? 'Received' : 'Paid'}</th><th class="num">Remaining</th><th class="num">Remaining (GBP)</th>
@@ -273,7 +317,7 @@ async function loadInvoices(type) {
         .map(
           (i) => `
       <tr class="clickable" data-id="${i.id}">
-        <td>${esc(i.party_name)}</td><td>${esc(i.invoice_number)}</td><td>${esc(i.invoice_date)}</td><td>${i.currency}</td>
+        <td><span class="entity-tag">${esc(i.entity_code)}</span></td><td>${esc(i.party_name)}</td><td>${esc(i.invoice_number)}</td><td>${esc(i.invoice_date)}</td><td>${i.currency}</td>
         <td class="num">${fmt(i.net_amount)}</td><td class="num">${fmt(i.vat_amount)}</td><td class="num">${fmt(i.total_amount)}</td>
         <td class="num">${i.exchange_rate}</td><td class="num">${fmt(i.base_total, BASE)}</td>
         <td class="num">${fmt(i.paid_amount)}</td><td class="num">${fmt(i.remaining_amount)}</td><td class="num">${fmt(i.remaining_base, BASE)}</td>
@@ -281,7 +325,7 @@ async function loadInvoices(type) {
         ${type === 'purchase' ? `<td>${i.status !== 'Paid' ? `<button class="btn btn-small btn-pay" data-id="${i.id}">Pay</button>` : ''}</td>` : ''}
       </tr>`
         )
-        .join('') || `<tr><td colspan="13" class="hint">No ${type === 'sale' ? 'sales' : 'purchase'} invoices yet.</td></tr>`
+        .join('') || `<tr><td colspan="15" class="hint">No ${type === 'sale' ? 'sales' : 'purchase'} invoices yet.</td></tr>`
     }</tbody>`;
   table.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openInvoiceDetail(Number(tr.dataset.id))));
   table.querySelectorAll('.btn-pay').forEach((btn) =>
@@ -299,6 +343,7 @@ async function openInvoiceDetail(id) {
   body.innerHTML = `
     <h2>${isSale ? 'Sales' : 'Purchase'} invoice ${esc(inv.invoice_number)} - ${esc(inv.party_name)}</h2>
     <div class="detail-grid">
+      <div><span class="k">Entity:</span> ${esc(inv.entity_name)}</div>
       <div><span class="k">Date:</span> ${esc(inv.invoice_date)}</div>
       <div><span class="k">Currency:</span> ${inv.currency} @ ${inv.exchange_rate}</div>
       <div><span class="k">Net / VAT / Total:</span> ${fmt(inv.net_amount)} / ${fmt(inv.vat_amount)} / ${fmt(inv.total_amount)}</div>
@@ -314,7 +359,7 @@ async function openInvoiceDetail(id) {
     <div class="table-wrap"><table class="table">
       <thead><tr><th>Description</th><th>Account</th><th>Cost centre</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th class="num">Net (GBP)</th></tr></thead>
       <tbody>${lines
-        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${esc(l.account_code)} ${esc(l.account_name)}</td><td>${esc(ccName(l.cost_center))}</td><td class="num">${fmt(l.net_amount)}</td><td class="num">${l.vat_rate}</td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
+        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${acctLink(l.account_code, l.account_name)}</td><td>${esc(ccName(l.cost_center))}</td><td class="num">${fmt(l.net_amount)}</td><td class="num">${l.vat_rate}</td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
         .join('')}</tbody>
     </table></div>
 
@@ -330,13 +375,14 @@ async function openInvoiceDetail(id) {
       }</tbody>
     </table></div>
 
-    <div class="section-title">Journal entries</div>
-    ${ledgerTable(ledger)}
+    <div class="section-title">Journal entries <span class="muted">(click a line to open or edit its journal)</span></div>
+    ${ledgerTable(ledger, true)}
 
     ${inv.remaining_amount > 0.005 ? `<div class="dialog-actions inline">${isSale ? '' : '<button class="btn" id="btn-pay-invoice">Pay via bank</button>'}<button class="btn btn-primary" id="btn-record-payment">${isSale ? 'Record receipt' : 'Record payment'}</button></div>` : ''}
   `;
   const dlg = document.getElementById('dialog-detail');
-  dlg.showModal();
+  bindJournalRows(body);
+  if (!dlg.open) dlg.showModal();
   const payViaBank = document.getElementById('btn-pay-invoice');
   if (payViaBank) {
     payViaBank.addEventListener('click', () => {
@@ -353,13 +399,27 @@ async function openInvoiceDetail(id) {
   }
 }
 
-function ledgerTable(entries) {
+/** Journal lines; with openable = true, a click on a line opens its journal (e.g. from an invoice). */
+function ledgerTable(entries, openable = false) {
   return `<div class="table-wrap"><table class="table">
-    <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>FX note</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+    <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>Description</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
     <tbody>${entries
-      .map((e) => `<tr><td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td class="muted">${esc(e.fx_note || '')}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`)
+      .map(
+        (e) => `<tr ${openable ? `class="clickable" data-journal="${e.journal_id}"` : ''}><td>${esc(e.entry_date)}</td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td>
+          <td>${esc(e.description)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
+      )
       .join('')}</tbody>
   </table></div>`;
+}
+
+/** Wire up clickable journal lines rendered by ledgerTable(…, true). */
+function bindJournalRows(root) {
+  root.querySelectorAll('tr[data-journal]').forEach((tr) =>
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return;
+      openJournalDetail(Number(tr.dataset.journal));
+    })
+  );
 }
 
 // ----- New invoice dialog -----
@@ -380,6 +440,7 @@ document.querySelectorAll('[data-new-invoice]').forEach((btn) =>
     invoiceForm.reset();
     document.getElementById('invoice-dialog-title').textContent = invoiceType === 'sale' ? 'New sales invoice' : 'New purchase invoice';
     document.getElementById('invoice-party-label').textContent = invoiceType === 'sale' ? 'Customer' : 'Supplier';
+    fillEntityField(invoiceForm.entity_id);
     invoiceForm.party_id.innerHTML = parties.map((p) => `<option value="${p.id}" data-currency="${p.currency}">${esc(p.name)} (${p.currency})</option>`).join('');
     invoiceForm.currency.innerHTML = currencyOptions(BASE);
     invoiceForm.invoice_date.value = today();
@@ -468,6 +529,7 @@ document.querySelector('#invoice-lines').addEventListener('input', (e) => {
 invoiceForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
+    entity_id: Number(invoiceForm.entity_id.value),
     type: invoiceType,
     party_id: Number(invoiceForm.party_id.value),
     invoice_number: invoiceForm.invoice_number.value.trim(),
@@ -505,7 +567,7 @@ async function openPaymentDialog(inv) {
     inv.currency
   )} of ${fmt(inv.total_amount, inv.currency)}, booked at ${inv.exchange_rate} = ${fmt(inv.remaining_base, BASE)}.`;
   document.getElementById('payment-amount-label').textContent = `Amount of the invoice settled (${inv.currency})`;
-  const banks = bankAccounts();
+  const banks = bankAccounts().filter(forEntity(inv.entity_id));
   const preferred = banks.find((b) => b.bank_currency === inv.currency) || banks[0];
   paymentForm.bank_account.innerHTML = banks
     .map((b) => `<option value="${esc(b.code)}" ${b === preferred ? 'selected' : ''}>${esc(accountLabel(b))} (${b.bank_currency})</option>`)
@@ -607,7 +669,8 @@ async function loadBank() {
   sel.innerHTML =
     '<option value="">Detect from IBAN in the file</option>' +
     bankAccounts()
-      .map((b) => `<option value="${esc(b.code)}">${esc(accountLabel(b))} (${b.bank_currency}${b.iban ? ', ' + esc(b.iban) : ''})</option>`)
+      .filter((b) => !CURRENT_ENTITY || forEntity(CURRENT_ENTITY)(b))
+      .map((b) => `<option value="${esc(b.code)}">${esc(accountLabel(b))} (${b.bank_currency}${b.entity_id ? ', ' + esc(entityCode(b.entity_id)) : ''}${b.iban ? ', ' + esc(b.iban) : ''})</option>`)
       .join('');
   sel.value = prev;
 
@@ -617,12 +680,12 @@ async function loadBank() {
     statements
       .map(
         (s) => `<tr class="clickable ${s.id === currentStatementId ? 'selected' : ''}" data-id="${s.id}">
-          <td>${esc(s.uploaded_at.slice(0, 16))}</td><td>${esc(s.bank_account)} ${esc(s.bank_account_name)}</td>
+          <td>${esc(s.uploaded_at.slice(0, 16))}</td><td><span class="entity-tag">${esc(s.entity_code)}</span></td><td>${acctLink(s.bank_account, s.bank_account_name)}</td>
           <td>${esc(s.statement_ref || '')}</td><td>${esc(s.from_date || '')} – ${esc(s.to_date || '')}</td><td class="muted">${esc(s.filename || '')}</td>
           <td class="num">${s.line_count}</td><td class="num">${s.open_lines ? `<span class="badge open">${s.open_lines}</span>` : '<span class="badge paid">0</span>'}</td>
         </tr>`
       )
-      .join('') || '<tr><td colspan="7" class="hint">No statements uploaded yet.</td></tr>';
+      .join('') || '<tr><td colspan="8" class="hint">No statements uploaded yet.</td></tr>';
   tbody.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openStatement(Number(tr.dataset.id))));
   if (currentStatementId) await openStatement(currentStatementId);
 }
@@ -638,7 +701,7 @@ document.getElementById('form-upload').addEventListener('submit', async (e) => {
   if (!file) return;
   try {
     const content = await file.text();
-    const results = await post('/api/bank/statements', { filename: file.name, content, bank_account: form.bank_account.value || null });
+    const results = await post('/api/bank/statements', { filename: file.name, content, bank_account: form.bank_account.value || null, entity_id: CURRENT_ENTITY || null });
     const imported = results.reduce((s, r) => s + r.imported, 0);
     const skipped = results.reduce((s, r) => s + r.skipped, 0);
     const auto = results.flatMap((r) => r.auto_settled || []);
@@ -687,10 +750,10 @@ async function openStatement(id) {
   currentStatementId = id;
   document.querySelectorAll('#statements-table tr').forEach((tr) => tr.classList.toggle('selected', Number(tr.dataset.id) === id));
   const [st, openInvoices] = await Promise.all([api(`/api/bank/statements/${id}`), api('/api/invoices')]);
-  const open = openInvoices.filter((i) => i.status !== 'Paid');
+  const open = openInvoices.filter((i) => i.status !== 'Paid' && i.entity_id === st.entity_id);
   const bank = ACCOUNTS.find((a) => a.code === st.bank_account);
   document.getElementById('statement-panel').hidden = false;
-  document.getElementById('statement-title').textContent = `Statement ${st.statement_ref || st.id} - ${st.bank_account} ${st.bank_account_name}`;
+  document.getElementById('statement-title').textContent = `Statement ${st.statement_ref || st.id} - ${st.bank_account} ${st.bank_account_name} (${st.entity_name})`;
   document.getElementById('statement-error').textContent = '';
 
   const tbody = document.querySelector('#statement-lines-table tbody');
@@ -720,7 +783,7 @@ async function openStatement(id) {
             <option value="account" ${suggested ? '' : 'selected'}>Ledger account</option>
             <option value="invoice" ${suggested ? 'selected' : ''} ${candidates.length ? '' : 'disabled'}>Open ${moneyIn ? 'sales' : 'purchase'} invoice</option>
           </select>
-          <select class="p-account" ${suggested ? 'hidden' : ''}><option value="">Choose opposing account…</option>${accountOptions((a) => a.code !== st.bank_account)}</select>
+          <select class="p-account" ${suggested ? 'hidden' : ''}><option value="">Choose opposing account…</option>${accountOptions((a) => a.code !== st.bank_account && forEntity(st.entity_id)(a))}</select>
           <select class="p-cc" hidden title="Cost centre">${ccOptions('')}</select>
           <select class="p-invoice" ${suggested ? '' : 'hidden'}>${invOptions}</select>
           <label class="p-settle" hidden>Settles <input class="p-settle-amount num" type="number" step="0.01" min="0.01" /> <span class="p-settle-ccy"></span></label>
@@ -786,7 +849,7 @@ async function loadJournals() {
   tbody.innerHTML = journals
     .map(
       (j) => `<tr class="clickable" data-id="${j.id}">
-        <td>${esc(j.journal_date)}</td><td>${esc(j.period)}</td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}</td>
+        <td>${esc(j.journal_date)}</td><td>${esc(j.period)}</td><td><span class="entity-tag">${esc(j.entity_code)}</span></td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}${j.edit_count ? ' <span class="badge edited">Edited</span>' : ''}</td>
         <td><span class="badge src-${esc(j.source_type)}">${esc(SOURCE_LABEL[j.source_type] || j.source_type)}</span></td>
         <td class="num">${j.line_count}</td><td class="num">${fmt(j.total, BASE)}</td></tr>`
     )
@@ -796,40 +859,90 @@ async function loadJournals() {
 
 async function openJournalDetail(id) {
   const j = await api(`/api/journals/${id}`);
-  document.getElementById('detail-body').innerHTML = `
+  const editNote = {
+    full: 'You can change everything in this journal.',
+    reclassify: `This journal follows its ${(SOURCE_LABEL[j.source_type] || j.source_type).toLowerCase()} document: you can change the description and move P&L lines to another account or cost centre.`,
+    locked: `Period ${j.period} is closed - reopen it in Setup to change this journal.`,
+  }[j.edit_mode];
+  const body = document.getElementById('detail-body');
+  body.innerHTML = `
     <h2>Journal ${j.reference ? esc(j.reference) + ' - ' : ''}${esc(j.description)}</h2>
     <div class="detail-grid">
-      <div><span class="k">Date:</span> ${esc(j.journal_date)}</div>
+      <div><span class="k">Entity:</span> ${esc(j.entity_name)}</div>
+      <div><span class="k">Date:</span> ${esc(j.journal_date)} (period ${esc(j.period)}, ${esc(j.period_status)})</div>
       <div><span class="k">Source:</span> ${esc(SOURCE_LABEL[j.source_type] || j.source_type)}</div>
+      <div><span class="k">Changed:</span> ${j.edit_count ? `${j.edit_count} time(s), last ${esc(j.edited_at)}` : 'never'}</div>
     </div>
-    ${ledgerTable(j.lines)}`;
-  document.getElementById('dialog-detail').showModal();
+    ${ledgerTable(j.lines)}
+    <p class="hint">${esc(editNote)}</p>
+    ${
+      j.history.length
+        ? `<div class="section-title">History</div><ul class="history">${j.history.map((h) => `<li><span class="muted">${esc(h.changed_at)}</span> ${esc(h.summary)}</li>`).join('')}</ul>`
+        : ''
+    }
+    ${j.edit_mode !== 'locked' ? '<div class="dialog-actions inline"><button class="btn btn-primary" id="btn-edit-journal">Edit journal</button></div>' : ''}`;
+  const dlg = document.getElementById('dialog-detail');
+  if (!dlg.open) dlg.showModal();
+  const editBtn = document.getElementById('btn-edit-journal');
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      dlg.close();
+      if (j.edit_mode === 'full') openJournalForm(j);
+      else openReclassDialog(j);
+    });
+  }
 }
 
 const journalForm = document.getElementById('form-journal');
+let editingJournal = null;
 
-document.getElementById('btn-new-journal').addEventListener('click', async () => {
+/** New journal (no argument) or full edit of a manual/opening journal (amounts in GBP). */
+async function openJournalForm(journal = null) {
   await Promise.all([loadAccounts(), loadCostCenters()]);
+  editingJournal = journal;
   journalForm.reset();
+  fillEntityField(journalForm.entity_id, journal ? journal.entity_id : null);
+  journalForm.entity_id.disabled = !!journal;
   journalForm.currency.innerHTML = currencyOptions(BASE);
-  journalForm.journal_date.value = today();
+  journalForm.currency.disabled = !!journal;
+  document.getElementById('journal-dialog-title').textContent = journal ? `Edit journal ${journal.reference || journal.id}` : 'New journal entry';
   document.getElementById('journal-error').textContent = '';
   document.querySelector('#journal-lines tbody').innerHTML = '';
-  addJournalLine();
-  addJournalLine();
+  if (journal) {
+    journalForm.journal_date.value = journal.journal_date;
+    journalForm.reference.value = journal.reference || '';
+    journalForm.description.value = journal.description;
+    for (const l of journal.lines) addJournalLine(l);
+  } else {
+    journalForm.journal_date.value = today();
+    addJournalLine();
+    addJournalLine();
+  }
   refreshJournalRate();
   document.getElementById('dialog-journal').showModal();
+}
+
+document.getElementById('btn-new-journal').addEventListener('click', () => openJournalForm(null));
+
+// Switching entity changes which accounts (e.g. bank accounts) can be used.
+journalForm.entity_id.addEventListener('change', () => {
+  document.querySelectorAll('#journal-lines .j-account').forEach((sel) => {
+    const value = sel.value;
+    sel.innerHTML = `<option value="">Choose account…</option>${accountOptions(forEntity(journalForm.entity_id.value), value)}`;
+  });
 });
 
-function addJournalLine() {
+function addJournalLine(prefill = null) {
   const tbody = document.querySelector('#journal-lines tbody');
   const tr = document.createElement('tr');
+  if (prefill && prefill.id) tr.dataset.lineId = prefill.id;
+  const p = prefill || {};
   tr.innerHTML = `
-    <td><select class="j-account" required><option value="">Choose account…</option>${accountOptions()}</select></td>
-    <td><select class="j-cc" disabled>${ccOptions('')}</select></td>
-    <td><input class="j-desc" maxlength="120" /></td>
-    <td class="num"><input class="j-debit num" type="number" step="0.01" min="0" /></td>
-    <td class="num"><input class="j-credit num" type="number" step="0.01" min="0" /></td>
+    <td><select class="j-account" required><option value="">Choose account…</option>${accountOptions(forEntity(journalForm.entity_id.value), p.account_code)}</select></td>
+    <td><select class="j-cc" disabled>${ccOptions(p.cost_center || '')}</select></td>
+    <td><input class="j-desc" maxlength="120" value="${esc(p.description || '')}" /></td>
+    <td class="num"><input class="j-debit num" type="number" step="0.01" min="0" value="${p.debit ? p.debit : ''}" /></td>
+    <td class="num"><input class="j-credit num" type="number" step="0.01" min="0" value="${p.credit ? p.credit : ''}" /></td>
     <td><button type="button" class="btn btn-small btn-icon" title="Remove line">×</button></td>`;
   tr.querySelector('.btn-icon').addEventListener('click', () => {
     if (tbody.children.length > 2) tr.remove();
@@ -837,16 +950,21 @@ function addJournalLine() {
   });
   const jAcc = tr.querySelector('.j-account');
   jAcc.addEventListener('change', () => syncCcSelect(jAcc, tr.querySelector('.j-cc')));
+  if (p.account_code) {
+    const cc = tr.querySelector('.j-cc');
+    cc.disabled = !isPlAccount(p.account_code);
+  }
   // Typing a debit clears the credit on the same line and vice versa.
   tr.querySelector('.j-debit').addEventListener('input', (e) => e.target.value && (tr.querySelector('.j-credit').value = ''));
   tr.querySelector('.j-credit').addEventListener('input', (e) => e.target.value && (tr.querySelector('.j-debit').value = ''));
   tbody.appendChild(tr);
   updateJournalTotals();
 }
-document.getElementById('btn-add-journal-line').addEventListener('click', addJournalLine);
+document.getElementById('btn-add-journal-line').addEventListener('click', () => addJournalLine());
 
 function journalLinesFromForm() {
   return [...document.querySelectorAll('#journal-lines tbody tr')].map((tr) => ({
+    id: tr.dataset.lineId ? Number(tr.dataset.lineId) : null,
     account_code: tr.querySelector('.j-account').value,
     cost_center: tr.querySelector('.j-cc').value || null,
     description: tr.querySelector('.j-desc').value.trim(),
@@ -877,6 +995,7 @@ journalForm.journal_date.addEventListener('change', refreshJournalRate);
 journalForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
+    entity_id: Number(journalForm.entity_id.value),
     journal_date: journalForm.journal_date.value,
     reference: journalForm.reference.value.trim(),
     description: journalForm.description.value.trim(),
@@ -885,7 +1004,8 @@ journalForm.addEventListener('submit', async (e) => {
     lines: journalLinesFromForm(),
   };
   try {
-    await post('/api/journals', payload);
+    if (editingJournal) await post(`/api/journals/${editingJournal.id}`, payload, 'PUT');
+    else await post('/api/journals', payload);
     document.getElementById('dialog-journal').close();
     refreshActive();
   } catch (err) {
@@ -899,17 +1019,18 @@ async function loadLedger() {
   const [entries, tb] = await Promise.all([api('/api/ledger'), api('/api/trial-balance'), loadCostCenters()]);
   document.querySelector('#ledger-table tbody').innerHTML = entries
     .map(
-      (e) => `<tr>
-        <td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
+      (e) => `<tr class="clickable" data-journal="${e.journal_id}">
+        <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
         <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
     )
     .join('');
+  bindJournalRows(document.getElementById('ledger-table'));
   const totDr = tb.reduce((s, r) => s + r.debit, 0);
   const totCr = tb.reduce((s, r) => s + r.credit, 0);
   document.querySelector('#tb-full-table tbody').innerHTML =
     tb
-      .map((r) => `<tr><td>${esc(r.account_code)} ${esc(r.account_name)}</td><td class="num">${fmt(r.debit)}</td><td class="num">${fmt(r.credit)}</td><td class="num">${fmt(r.balance)}</td></tr>`)
+      .map((r) => `<tr><td>${acctLink(r.account_code, r.account_name)}</td><td class="num">${fmt(r.debit)}</td><td class="num">${fmt(r.credit)}</td><td class="num">${fmt(r.balance)}</td></tr>`)
       .join('') + `<tr class="total"><td>Total</td><td class="num">${fmt(totDr)}</td><td class="num">${fmt(totCr)}</td><td class="num">${fmt(totDr - totCr)}</td></tr>`;
 }
 
@@ -927,7 +1048,7 @@ document.getElementById('fin-detail').addEventListener('change', () => {
 function finGroupRows(group) {
   const head = `<tr class="cat"><td>${esc(group.name)}</td><td class="num">${fmt(group.total)}</td></tr>`;
   const lines = group.accounts
-    .map((a) => `<tr class="acct"><td>${a.code ? esc(a.code) + ' ' : ''}${esc(a.name)}</td><td class="num">${fmt(a.amount)}</td></tr>`)
+    .map((a) => `<tr class="acct"><td>${a.code ? acctLink(a.code, a.name) : esc(a.name)}</td><td class="num">${fmt(a.amount)}</td></tr>`)
     .join('');
   return head + lines;
 }
@@ -984,7 +1105,7 @@ async function loadFinancials() {
     if (!rows.length && o.total === 0 && c.total === 0) return '';
     return (
       `<tr class="cat"><td>${esc(c.name)}</td><td class="num">${fmt(o.total)}</td><td class="num">${fmt(c.total)}</td></tr>` +
-      rows.map((a) => `<tr class="acct"><td>${a.code ? esc(a.code) + ' ' : ''}${esc(a.name)}</td><td class="num">${fmt(a.o)}</td><td class="num">${fmt(a.c)}</td></tr>`).join('')
+      rows.map((a) => `<tr class="acct"><td>${a.code ? acctLink(a.code, a.name) : esc(a.name)}</td><td class="num">${fmt(a.o)}</td><td class="num">${fmt(a.c)}</td></tr>`).join('')
     );
   };
   const total3 = (label, o, c, cls = 'sub') => `<tr class="${cls}"><td>${esc(label)}</td><td class="num">${fmt(o, BASE)}</td><td class="num">${fmt(c, BASE)}</td></tr>`;
@@ -1018,7 +1139,7 @@ async function loadFinancials() {
     subtotal('Net change in cash & bank', cf.net_change, 'grand') +
     `<tr class="cat"><td>Cash &amp; bank at ${esc(r.opening_date)}</td><td class="num">${fmt(cf.opening_cash, BASE)}</td></tr>` +
     `<tr class="cat"><td>Cash &amp; bank at ${esc(r.to)}</td><td class="num">${fmt(cf.closing_cash, BASE)}</td></tr>` +
-    cf.cash_accounts.map((a) => `<tr class="acct"><td>${esc(a.code)} ${esc(a.name)}</td><td class="num">${fmt(a.closing)}</td></tr>`).join('');
+    cf.cash_accounts.filter((a) => a.opening || a.closing).map((a) => `<tr class="acct"><td>${acctLink(a.code, a.name)}</td><td class="num">${fmt(a.closing)}</td></tr>`).join('');
   renderCostCenterTable(ccr);
 
   const cfCheck = document.getElementById('cf-check');
@@ -1039,8 +1160,8 @@ async function loadSetup() {
   const tbody = document.querySelector('#accounts-table tbody');
   tbody.innerHTML = ACCOUNTS.map(
     (a) => `<tr data-code="${esc(a.code)}">
-      <td><strong>${esc(a.code)}</strong></td>
-      <td>${esc(a.name)}${a.bank_currency ? ` <span class="muted">(${a.bank_currency}${a.iban ? ', ' + esc(a.iban) : ''})</span>` : ''}</td>
+      <td><strong>${acctLink(a.code, '')}</strong></td>
+      <td>${esc(a.name)}${a.bank_currency ? ` <span class="muted">(${a.bank_currency}${a.iban ? ', ' + esc(a.iban) : ''})</span>` : ''}${a.entity_id ? ` <span class="entity-tag">${esc(entityCode(a.entity_id))} only</span>` : ''}</td>
       <td><select class="cat-select" ${a.bank_currency ? 'disabled title="Bank accounts stay in Cash & bank"' : ''}>${catOptions(a.category, !!a.bank_currency)}</select></td>
       <td>${a.statement === 'BS' ? 'Balance sheet' : 'P&amp;L'}</td>
       <td class="muted">${esc(ROLE_LABEL[a.role] || (a.bank_currency ? 'Bank' : ''))}</td>
@@ -1639,6 +1760,7 @@ function renderAssetTable() {
     .map(
       (a) => `<tr class="clickable" data-id="${a.id}">
         <td><strong>${esc(a.asset_number)}</strong></td>
+        <td><span class="entity-tag">${esc(a.entity_code)}</span></td>
         <td>${esc(a.name)}${a.description ? `<div class="muted">${esc(a.description)}</div>` : ''}</td>
         <td>${a.asset_type === 'machinery' ? 'Machinery' : 'Inventory'}</td>
         <td>${esc(ccName(a.cost_center))}</td>
@@ -1653,7 +1775,7 @@ function renderAssetTable() {
     )
     .join('');
   const sum = (k) => rows.reduce((t, a) => t + a[k], 0);
-  tbody.innerHTML += `<tr class="total"><td colspan="5">Total${assetFilter ? ` ${assetFilter}` : ''}</td><td class="num">${fmt(sum('acquisition_cost'))}</td><td></td>
+  tbody.innerHTML += `<tr class="total"><td colspan="6">Total${assetFilter ? ` ${assetFilter}` : ''}</td><td class="num">${fmt(sum('acquisition_cost'))}</td><td></td>
     <td class="num">${fmt(sum('accumulated_depreciation'))}</td><td class="num">${fmt(sum('book_value'))}</td><td class="num">${fmt(sum('monthly_depreciation'))}</td><td></td></tr>`;
   tbody.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openAssetDetail(Number(tr.dataset.id))));
 }
@@ -1732,14 +1854,22 @@ document.getElementById('btn-new-asset').addEventListener('click', async () => {
   assetForm.asset_type.innerHTML = META.asset_types.map((t) => `<option value="${t.key}">${esc(t.name)}</option>`).join('');
   assetForm.cost_center.innerHTML = ccOptions('');
   assetForm.acquisition_date.value = today();
-  const banks = bankAccounts().filter((b) => b.bank_currency === BASE);
-  assetForm.contra_account.innerHTML =
-    banks.map((b) => `<option value="${esc(b.code)}">${esc(accountLabel(b))}</option>`).join('') +
-    accountOptions((a) => a.statement === 'BS' && !banks.includes(a) && a.category !== 'fixed_assets' && a.category !== 'accumulated_depreciation');
+  fillEntityField(assetForm.entity_id);
+  fillAssetContra();
   document.getElementById('asset-error').textContent = '';
   updateAssetHint();
   document.getElementById('dialog-asset').showModal();
 });
+
+/** "Paid from" choices: the entity's GBP bank accounts first, then other balance sheet accounts it may use. */
+function fillAssetContra() {
+  const ok = forEntity(assetForm.entity_id.value);
+  const banks = bankAccounts().filter((b) => b.bank_currency === BASE && ok(b));
+  assetForm.contra_account.innerHTML =
+    banks.map((b) => `<option value="${esc(b.code)}">${esc(accountLabel(b))}</option>`).join('') +
+    accountOptions((a) => ok(a) && a.statement === 'BS' && a.category !== 'cash' && a.category !== 'fixed_assets' && a.category !== 'accumulated_depreciation');
+}
+assetForm.entity_id.addEventListener('change', fillAssetContra);
 
 function updateAssetHint() {
   const cost = parseFloat(assetForm.acquisition_cost.value) || 0;
@@ -1754,6 +1884,7 @@ assetForm.addEventListener('input', updateAssetHint);
 assetForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
+    entity_id: Number(assetForm.entity_id.value),
     name: assetForm.name.value.trim(),
     description: assetForm.description.value.trim(),
     asset_type: assetForm.asset_type.value,
@@ -1818,7 +1949,7 @@ const pay = { inv: null, supplier: null, amount: 0, from: null, bank: null, step
 
 async function openPayDialog(inv) {
   await Promise.all([loadParties(), loadAccounts()]);
-  const banks = bankAccounts();
+  const banks = bankAccounts().filter(forEntity(inv.entity_id));
   Object.assign(pay, {
     inv,
     supplier: SUPPLIERS.find((x) => x.id === inv.party_id) || { name: inv.party_name },
@@ -1884,7 +2015,7 @@ function renderPay() {
     </div>`;
   const summary = () => `
     <div class="pay-fields">
-      <div class="pay-field"><span class="k">From</span><strong>Northbridge Trading Ltd · ${esc(acc.name)}${acc.iban ? ` · ${esc(acc.iban)}` : ''}</strong></div>
+      <div class="pay-field"><span class="k">From</span><strong>${esc(inv.entity_name)} · ${esc(acc.name)}${acc.iban ? ` · ${esc(acc.iban)}` : ''}</strong></div>
       <div class="pay-field"><span class="k">To</span><strong>${esc(s.name)}${payeeLines.length ? `<div class="muted">${esc(payeeLines.join(' · '))}</div>` : ''}</strong></div>
       <div class="pay-field"><span class="k">Amount</span><strong>${fmt(pay.amount, inv.currency)}${acc.bank_currency !== inv.currency && debit !== null ? ` <span class="muted">(${fmt(debit, acc.bank_currency)} from your account)</span>` : ''}</strong></div>
       <div class="pay-field"><span class="k">Reference</span><strong>${esc(inv.invoice_number)}</strong></div>
@@ -1893,7 +2024,7 @@ function renderPay() {
   const error = pay.error ? `<p class="error">${esc(pay.error)}</p>` : '';
 
   if (pay.step === 'review') {
-    const banks = bankAccounts();
+    const banks = bankAccounts().filter(forEntity(inv.entity_id));
     body.innerHTML = `
       <div class="form">
         <h2>Pay ${esc(inv.invoice_number)} - ${esc(inv.party_name)}</h2>
@@ -1941,7 +2072,7 @@ function renderPay() {
           <h2>Log in to approve a payment</h2>
           <p class="hint">Northbridge Books is asking to make a payment from your account. This is a simulation: there is no real login, so never enter real bank details here.</p>
           <div class="pay-fields">
-            <div class="pay-field"><span class="k">Customer</span><strong>Northbridge Trading Ltd (demo)</strong></div>
+            <div class="pay-field"><span class="k">Customer</span><strong>${esc(inv.entity_name)} (demo)</strong></div>
             <div class="pay-field"><span class="k">Security</span><strong>Demo passcode accepted automatically</strong></div>
           </div>
         </div>
@@ -2038,12 +2169,153 @@ async function payAction(action) {
   renderPay();
 }
 
+// ---------- Ledger account overview ----------
+
+const accountPeriodForm = document.getElementById('form-account-period');
+let accountViewCode = null;
+
+accountPeriodForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  loadAccountView(accountViewCode);
+});
+document.getElementById('account-back').addEventListener('click', (e) => {
+  e.preventDefault();
+  if (history.length > 1) history.back();
+  else showTab('ledger');
+});
+
+async function loadAccountView(code) {
+  if (code !== accountViewCode) accountPeriodForm.cost_center.value = '';
+  accountViewCode = code;
+  await Promise.all([loadPeriods(), loadCostCenters(), loadAccounts()]);
+  fillPeriodSelects(accountPeriodForm);
+  const ccSel = accountPeriodForm.cost_center;
+  const ccPrev = ccSel.value;
+  ccSel.innerHTML =
+    '<option value="">All</option>' + COST_CENTERS.map((c) => `<option value="${esc(c.code)}">${esc(c.code)} ${esc(c.name)}</option>`).join('') + '<option value="none">Unallocated</option>';
+  ccSel.value = ccPrev;
+  const { from, to } = periodRange(accountPeriodForm);
+  const d = await api(`/api/accounts/${encodeURIComponent(code)}/detail?from=${from}&to=${to}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}`);
+  const a = d.account;
+  const isPl = a.statement === 'PL';
+  // Cost centres only exist on P&L lines.
+  ccSel.closest('label').hidden = !isPl;
+  const nat = (v) => fmt(d.sign * v);
+  document.getElementById('account-title').textContent = `${a.code} ${a.name}`;
+  document.getElementById('account-meta').textContent =
+    `${a.category_name} · ${isPl ? 'profit & loss' : 'balance sheet'} · ${d.sign > 0 ? 'debit' : 'credit'} balance is positive` +
+    (a.entity_id ? ` · only used by ${entityName(a.entity_id)}` : '') +
+    ` · ${d.from} to ${d.to}` +
+    (d.cost_center ? ` · cost centre ${d.cost_center === 'none' ? 'unallocated' : ccName(d.cost_center)}` : '');
+  document.getElementById('account-cards').innerHTML = `
+    <div class="card"><div class="label">${isPl ? 'Before the period' : 'Opening balance'}</div><div class="value">${nat(d.opening)}</div><div class="sub">at ${esc(dayBeforeIso(d.from))}</div></div>
+    <div class="card"><div class="label">Debits</div><div class="value">${fmt(d.debit)}</div><div class="sub">${d.entries.length} entries</div></div>
+    <div class="card"><div class="label">Credits</div><div class="value">${fmt(d.credit)}</div><div class="sub">in the period</div></div>
+    <div class="card"><div class="label">${isPl ? 'Total for the period' : 'Closing balance'}</div><div class="value">${isPl ? nat(d.debit - d.credit) : nat(d.closing)}</div><div class="sub">${isPl ? `cumulative ${nat(d.closing)}` : `at ${esc(d.to)}`}</div></div>`;
+
+  const groupTable = (rows, label, nameOf) =>
+    rows.length
+      ? `<thead><tr><th>${label}</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net</th></tr></thead><tbody>${rows
+          .map((g) => `<tr><td>${esc(nameOf(g))}</td><td class="num">${fmt(g.debit)}</td><td class="num">${fmt(g.credit)}</td><td class="num"><strong>${fmt(g.net)}</strong></td></tr>`)
+          .join('')}</tbody>`
+      : '<tbody><tr><td class="hint">Nothing booked in this period.</td></tr></tbody>';
+  document.getElementById('account-months').innerHTML = groupTable(d.by_month, 'Month', (g) => periodLabel(g.key));
+  document.getElementById('account-ccs').innerHTML = isPl
+    ? groupTable(d.by_cost_center, 'Cost centre', (g) => g.name)
+    : '<tbody><tr><td class="hint">Cost centres are only used on P&amp;L accounts.</td></tr></tbody>';
+
+  const table = document.getElementById('account-entries');
+  table.innerHTML = `<thead><tr><th>Date</th><th>Entity</th><th>Journal</th><th>Description</th><th>Cost centre</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+    <tbody>
+      <tr class="total"><td colspan="7">${isPl ? 'Before the period' : 'Opening balance'}</td><td class="num">${nat(d.opening)}</td></tr>
+      ${d.entries
+        .map(
+          (e) => `<tr class="clickable" data-journal="${e.journal_id}">
+            <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td>
+            <td>${esc(e.reference || '')} <span class="badge src-${esc(e.source_type)}">${esc(SOURCE_LABEL[e.source_type] || e.source_type)}</span></td>
+            <td>${esc(e.description)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td>
+            <td>${esc(ccName(e.cost_center))}</td>
+            <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td><td class="num">${nat(e.balance)}</td></tr>`
+        )
+        .join('')}
+      <tr class="total"><td colspan="5">${isPl ? 'Cumulative at' : 'Closing balance at'} ${esc(d.to)}</td><td class="num">${fmt(d.debit)}</td><td class="num">${fmt(d.credit)}</td><td class="num">${nat(d.closing)}</td></tr>
+    </tbody>`;
+  bindJournalRows(table);
+}
+
+function dayBeforeIso(date) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// ---------- Reclassify a journal that follows a source document ----------
+
+const reclassForm = document.getElementById('form-reclass');
+let reclassJournal = null;
+
+async function openReclassDialog(j) {
+  await Promise.all([loadAccounts(), loadCostCenters()]);
+  reclassJournal = j;
+  document.getElementById('reclass-title').textContent = `Edit journal ${j.reference || j.id} (${(SOURCE_LABEL[j.source_type] || j.source_type).toLowerCase()})`;
+  document.getElementById('reclass-hint').textContent =
+    'The amounts and date follow the source document. You can change the description, and move P&L lines to another P&L account and/or cost centre; balance sheet lines stay as they are.';
+  document.getElementById('reclass-error').textContent = '';
+  reclassForm.description.value = j.description;
+  const plAccount = (a) => a.statement === 'PL' && forEntity(j.entity_id)(a);
+  document.querySelector('#reclass-lines tbody').innerHTML = j.lines
+    .map((l) => {
+      const pl = isPlAccount(l.account_code);
+      return `<tr data-line="${l.id}" data-pl="${pl ? 1 : 0}">
+        <td>${pl ? `<select class="r-account">${accountOptions(plAccount, l.account_code)}</select>` : `${esc(l.account_code)} ${esc(l.account_name)} <span class="muted">(fixed)</span>`}</td>
+        <td>${pl ? `<select class="r-cc">${ccOptions(l.cost_center || '')}</select>` : '<span class="muted">-</span>'}</td>
+        <td class="num">${l.debit ? fmt(l.debit) : ''}</td><td class="num">${l.credit ? fmt(l.credit) : ''}</td></tr>`;
+    })
+    .join('');
+  document.getElementById('dialog-reclass').showModal();
+}
+
+reclassForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const lines = [...document.querySelectorAll('#reclass-lines tbody tr[data-pl="1"]')].map((tr) => ({
+    id: Number(tr.dataset.line),
+    account_code: tr.querySelector('.r-account').value,
+    cost_center: tr.querySelector('.r-cc').value || null,
+  }));
+  try {
+    await post(`/api/journals/${reclassJournal.id}`, { description: reclassForm.description.value.trim(), lines }, 'PUT');
+    document.getElementById('dialog-reclass').close();
+    refreshActive();
+  } catch (err) {
+    document.getElementById('reclass-error').textContent = err.message;
+  }
+});
+
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
 
 (async function init() {
   META = await api('/api/meta');
+  const sel = document.getElementById('entity-select');
+  let saved = null;
+  try {
+    saved = localStorage.getItem('nb-entity');
+  } catch {
+    /* remembering the entity is optional */
+  }
+  CURRENT_ENTITY = saved !== null && (saved === '' || META.entities.some((e) => String(e.id) === saved)) ? saved : String(META.entities[0].id);
+  sel.innerHTML = META.entities.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('') + '<option value="">All entities</option>';
+  sel.value = CURRENT_ENTITY;
+  sel.addEventListener('change', () => {
+    CURRENT_ENTITY = sel.value;
+    try {
+      localStorage.setItem('nb-entity', CURRENT_ENTITY);
+    } catch {
+      /* optional */
+    }
+    refreshActive();
+  });
   await Promise.all([loadAccounts(), loadCostCenters(), loadPeriods()]);
   showTab(location.hash.slice(1) || 'dashboard');
 })();

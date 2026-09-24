@@ -53,6 +53,7 @@ function decorate(a) {
   return {
     ...a,
     type_name: ASSET_TYPES[a.asset_type] ? ASSET_TYPES[a.asset_type].name : a.asset_type,
+    entity_code: (acct.getEntity(a.entity_id) || {}).code,
     cost_center_name: a.cost_center ? (db.prepare('SELECT name FROM cost_centers WHERE code = ?').get(a.cost_center) || {}).name : null,
     useful_life_years: a.depreciation_rate > 0 ? round2(100 / a.depreciation_rate) : null,
     monthly_depreciation: book_value > 0 ? Math.min(monthly, book_value) : 0,
@@ -63,8 +64,9 @@ function decorate(a) {
   };
 }
 
-function listAssets() {
-  return db.prepare('SELECT * FROM fixed_assets ORDER BY asset_number').all().map(decorate);
+function listAssets(entityId) {
+  const E = acct.entityOf(entityId);
+  return db.prepare('SELECT * FROM fixed_assets WHERE (? IS NULL OR entity_id = ?) ORDER BY asset_number').all(E, E).map(decorate);
 }
 
 function getAsset(id) {
@@ -109,6 +111,7 @@ function nextAssetNumber() {
  * earlier books (depreciation already booked before this system).
  */
 function createAsset(data) {
+  const entity = acct.requireEntity(data.entity_id);
   const name = String(data.name || '').trim();
   if (!name) throw httpError(400, 'Asset name is required');
   if (!ASSET_TYPES[data.asset_type]) throw httpError(400, 'Asset type must be machinery or inventory');
@@ -136,6 +139,7 @@ function createAsset(data) {
       const accounts = assetAccounts(data.asset_type);
       const desc = `Acquisition ${assetNumber} ${name}`;
       journalId = acct.postJournal({
+        entity_id: entity.id,
         journal_date: data.acquisition_date,
         reference: assetNumber,
         description: desc,
@@ -150,10 +154,10 @@ function createAsset(data) {
     }
     const info = db
       .prepare(
-        `INSERT INTO fixed_assets (asset_number, name, description, asset_type, cost_center, acquisition_date, acquisition_cost, depreciation_rate, opening_depreciation, depreciation_start, acquisition_journal_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO fixed_assets (asset_number, entity_id, name, description, asset_type, cost_center, acquisition_date, acquisition_cost, depreciation_rate, opening_depreciation, depreciation_start, acquisition_journal_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(assetNumber, name, data.description || null, data.asset_type, data.cost_center || null, data.acquisition_date, cost, rate, opening, start, journalId);
+      .run(assetNumber, entity.id, name, data.description || null, data.asset_type, data.cost_center || null, data.acquisition_date, cost, rate, opening, start, journalId);
     return getAsset(Number(info.lastInsertRowid));
   });
 }
@@ -183,30 +187,41 @@ function runDepreciation(period) {
     .all(period, period)
     .map(decorate)
     .filter((a) => a.book_value > 0.005);
-  if (due.length === 0) return { period, assets: 0, amount: 0, journal_id: null };
+  if (due.length === 0) return { period, assets: 0, amount: 0, journal_ids: [] };
 
   return transaction(() => {
-    const lines = [];
-    const charges = [];
-    for (const a of due) {
-      const amount = round2(Math.min(monthlyCharge(a), a.book_value));
-      if (amount <= 0) continue;
-      const accounts = assetAccounts(a.asset_type);
-      const desc = `Depreciation ${period} ${a.asset_number} ${a.name}`;
-      lines.push({ account_code: accounts.expense.code, debit: amount, cost_center: a.cost_center, description: desc });
-      lines.push({ account_code: accounts.accumulated.code, credit: amount, description: desc });
-      charges.push({ asset_id: a.id, amount });
-    }
-    const journalId = acct.postJournal({
-      journal_date: p.end_date,
-      reference: `DEPR-${period}`,
-      description: `Depreciation ${period}`,
-      source_type: 'depreciation',
-      lines,
-    });
     const insert = db.prepare('INSERT INTO asset_depreciation (asset_id, period, amount, journal_id) VALUES (?, ?, ?, ?)');
-    for (const c of charges) insert.run(c.asset_id, period, c.amount, journalId);
-    return { period, assets: charges.length, amount: round2(charges.reduce((t, c) => t + c.amount, 0)), journal_id: journalId };
+    const journals = [];
+    let count = 0;
+    let total = 0;
+    // One journal per entity, since each entity keeps its own books.
+    for (const entityId of [...new Set(due.map((a) => a.entity_id))]) {
+      const lines = [];
+      const charges = [];
+      for (const a of due.filter((x) => x.entity_id === entityId)) {
+        const amount = round2(Math.min(monthlyCharge(a), a.book_value));
+        if (amount <= 0) continue;
+        const accounts = assetAccounts(a.asset_type);
+        const desc = `Depreciation ${period} ${a.asset_number} ${a.name}`;
+        lines.push({ account_code: accounts.expense.code, debit: amount, cost_center: a.cost_center, description: desc });
+        lines.push({ account_code: accounts.accumulated.code, credit: amount, description: desc });
+        charges.push({ asset_id: a.id, amount });
+      }
+      if (!charges.length) continue;
+      const journalId = acct.postJournal({
+        entity_id: entityId,
+        journal_date: p.end_date,
+        reference: `DEPR-${period}`,
+        description: `Depreciation ${period}`,
+        source_type: 'depreciation',
+        lines,
+      });
+      for (const c of charges) insert.run(c.asset_id, period, c.amount, journalId);
+      journals.push(journalId);
+      count += charges.length;
+      total += charges.reduce((t, c) => t + c.amount, 0);
+    }
+    return { period, assets: count, amount: round2(total), journal_ids: journals };
   });
 }
 

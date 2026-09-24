@@ -98,7 +98,7 @@ function parseCamt(xmlRaw) {
  * account whose IBAN matches the statement is used. Lines already imported
  * (same account, date, amount, direction and bank reference) are skipped.
  */
-function importStatement({ filename, content, bank_account }) {
+function importStatement({ filename, content, bank_account, entity_id }) {
   if (!content) throw httpError(400, 'The file is empty');
   const parsed = parseCamt(content);
 
@@ -112,6 +112,8 @@ function importStatement({ filename, content, bank_account }) {
       if (!bank || !bank.bank_currency) {
         throw httpError(400, `Choose the bank ledger account for this statement${st.iban ? ` (IBAN ${st.iban})` : ''}`);
       }
+      // A bank account belonging to one entity decides the entity; a shared one needs it chosen.
+      const entity = acct.requireEntity(bank.entity_id || acct.entityOf(entity_id));
       const ccy = st.currency || st.entries.find((e) => e.currency)?.currency || bank.bank_currency;
       if (ccy !== bank.bank_currency) {
         throw httpError(400, `Statement is in ${ccy} but ${bank.code} ${bank.name} is a ${bank.bank_currency} account`);
@@ -120,8 +122,8 @@ function importStatement({ filename, content, bank_account }) {
       if (st.iban && !bank.iban) db.prepare('UPDATE accounts SET iban = ? WHERE code = ?').run(st.iban.replace(/\s+/g, '').toUpperCase(), bank.code);
 
       const info = db
-        .prepare('INSERT INTO bank_statements (filename, bank_account, statement_ref, iban, currency, from_date, to_date) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(filename || null, bank.code, st.statement_ref, st.iban, ccy, st.from_date, st.to_date);
+        .prepare('INSERT INTO bank_statements (entity_id, filename, bank_account, statement_ref, iban, currency, from_date, to_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(entity.id, filename || null, bank.code, st.statement_ref, st.iban, ccy, st.from_date, st.to_date);
       const statementId = Number(info.lastInsertRowid);
 
       const dupCheck = db.prepare(
@@ -158,21 +160,25 @@ function importStatement({ filename, content, bank_account }) {
   });
 }
 
-function listStatements() {
+function listStatements(entityId) {
+  const E = acct.entityOf(entityId);
   return db
     .prepare(
-      `SELECT s.*, a.name AS bank_account_name, COUNT(l.id) AS line_count,
+      `SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, COUNT(l.id) AS line_count,
               SUM(CASE WHEN l.journal_id IS NULL THEN 1 ELSE 0 END) AS open_lines
-       FROM bank_statements s JOIN accounts a ON a.code = s.bank_account
+       FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id
        LEFT JOIN bank_statement_lines l ON l.statement_id = s.id
+       WHERE (? IS NULL OR s.entity_id = ?)
        GROUP BY s.id ORDER BY s.uploaded_at DESC, s.id DESC`
     )
-    .all();
+    .all(E, E);
 }
 
 function getStatement(id) {
   const s = db
-    .prepare('SELECT s.*, a.name AS bank_account_name FROM bank_statements s JOIN accounts a ON a.code = s.bank_account WHERE s.id = ?')
+    .prepare(
+      'SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, e.name AS entity_name FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id WHERE s.id = ?'
+    )
     .get(id);
   if (!s) return null;
   const lines = db
@@ -214,6 +220,7 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
     if (mode === 'invoice') {
       const invoice = acct.getInvoice(Number(invoice_id));
       if (!invoice) throw httpError(400, 'Choose an invoice');
+      if (invoice.entity_id !== statement.entity_id) throw httpError(400, `Invoice ${invoice.invoice_number} belongs to ${invoice.entity_name}`);
       if (moneyIn !== (invoice.type === 'sale')) {
         throw httpError(400, moneyIn ? 'Money received can only settle a sales invoice' : 'Money paid out can only settle a purchase invoice');
       }
@@ -237,6 +244,7 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
       const fxNote = bank.bank_currency === 'GBP' ? null : `${line.amount.toFixed(2)} ${bank.bank_currency} @ ${rate.rate} (ECB ${rate.rate_date})`;
       const desc = description && String(description).trim() ? String(description).trim() : label;
       journalId = acct.postJournal({
+        entity_id: statement.entity_id,
         journal_date: line.booking_date,
         reference: line.reference,
         description: desc,
@@ -271,10 +279,10 @@ function mentionsInvoice(text, invoiceNumber) {
 }
 
 /** The one open invoice (sales for money in, purchase for money out) whose number the line mentions, if any. */
-function matchInvoice(line) {
+function matchInvoice(line, entityId) {
   const text = `${line.remittance || ''} ${line.counterparty || ''}`;
   const type = line.direction === 'CRDT' ? 'sale' : 'purchase';
-  const matches = acct.listInvoices(type).filter((i) => i.status !== 'Paid' && mentionsInvoice(text, i.invoice_number));
+  const matches = acct.listInvoices(type, entityId).filter((i) => i.status !== 'Paid' && mentionsInvoice(text, i.invoice_number));
   // Several invoices mentioned (e.g. one payment for two invoices) is left for the user to split.
   return matches.length === 1 ? matches[0] : null;
 }
@@ -293,7 +301,7 @@ async function autoSettleStatement(statementId) {
   const lines = db.prepare('SELECT * FROM bank_statement_lines WHERE statement_id = ? AND journal_id IS NULL ORDER BY booking_date, id').all(statementId);
   const settled = [];
   for (const line of lines) {
-    const invoice = matchInvoice(line);
+    const invoice = matchInvoice(line, statement.entity_id);
     if (!invoice) continue;
     if (invoice.currency === bankCcy && line.amount > invoice.remaining_amount + 0.005) continue;
     try {

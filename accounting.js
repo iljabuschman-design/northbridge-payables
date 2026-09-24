@@ -58,21 +58,58 @@ function getCompany() {
   return db.prepare('SELECT * FROM company WHERE id = 1').get();
 }
 
+// ---------- Entities ----------
+
+function listEntities() {
+  return db.prepare('SELECT * FROM entities ORDER BY id').all();
+}
+
+function getEntity(id) {
+  return db.prepare('SELECT * FROM entities WHERE id = ?').get(Number(id));
+}
+
+function requireEntity(id) {
+  const e = id ? getEntity(id) : null;
+  if (!e) throw httpError(400, 'Choose an entity');
+  return e;
+}
+
+function createEntity({ code, name }) {
+  code = String(code || '').trim().toUpperCase();
+  name = String(name || '').trim();
+  if (!/^[A-Z0-9-]{1,10}$/.test(code)) throw httpError(400, 'Entity code must be 1-10 letters/digits');
+  if (!name) throw httpError(400, 'Entity name is required');
+  const info = db.prepare('INSERT INTO entities (code, name) VALUES (?, ?)').run(code, name);
+  return getEntity(Number(info.lastInsertRowid));
+}
+
+/** Entity filter from a request: null means all entities together (no intercompany elimination). */
+const entityOf = (v) => (v === undefined || v === null || v === '' || v === 'all' ? null : Number(v));
+
+/** An account restricted to one entity (e.g. its bank account) can't be used by another. */
+function assertAccountForEntity(account, entityId) {
+  if (account.entity_id && account.entity_id !== Number(entityId)) {
+    const e = getEntity(account.entity_id);
+    throw httpError(400, `${account.code} ${account.name} belongs to ${e ? e.name : 'another entity'}`);
+  }
+}
+
 // ---------- Chart of accounts ----------
 
 function decorateAccount(a) {
   const cat = CATEGORY_BY_KEY[a.category];
-  return { ...a, category_name: cat ? cat.name : a.category, statement: cat ? cat.statement : null, side: cat ? cat.side : null };
+  return { ...a, category_name: cat ? cat.name : a.category, statement: cat ? cat.statement : null, side: cat ? cat.side : null, cashflow: cat ? cat.cashflow : null };
 }
 
-function listAccounts() {
+function listAccounts(entityId) {
+  const E = entityOf(entityId);
   const rows = db
     .prepare(
       `SELECT a.*, COALESCE(SUM(l.debit), 0) AS total_debit, COALESCE(SUM(l.credit), 0) AS total_credit
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (? IS NULL OR l.entity_id = ?)
        GROUP BY a.code ORDER BY a.code`
     )
-    .all();
+    .all(E, E);
   return rows.map((r) => ({ ...decorateAccount(r), balance: round2(r.total_debit - r.total_credit) }));
 }
 
@@ -91,7 +128,7 @@ function listBankAccounts() {
   return db.prepare("SELECT * FROM accounts WHERE category = 'cash' AND bank_currency IS NOT NULL ORDER BY code").all();
 }
 
-function createAccount({ code, name, category, bank_currency, iban, role }) {
+function createAccount({ code, name, category, bank_currency, iban, role, entity_id }) {
   code = String(code || '').trim();
   name = String(name || '').trim();
   if (!/^[0-9A-Za-z-]{1,10}$/.test(code)) throw httpError(400, 'Account code must be 1-10 letters/digits');
@@ -103,13 +140,15 @@ function createAccount({ code, name, category, bank_currency, iban, role }) {
   } else {
     bank_currency = null;
   }
-  db.prepare('INSERT INTO accounts (code, name, category, role, bank_currency, iban) VALUES (?, ?, ?, ?, ?, ?)').run(
+  if (entity_id) requireEntity(entity_id);
+  db.prepare('INSERT INTO accounts (code, name, category, role, bank_currency, iban, entity_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
     code,
     name,
     category,
     role || null,
     bank_currency,
-    normaliseIban(iban)
+    normaliseIban(iban),
+    entity_id ? Number(entity_id) : null
   );
   return getAccount(code);
 }
@@ -301,34 +340,47 @@ function assertPeriodOpen(date) {
  * Post a balanced journal. Lines carry base-currency (GBP) debit/credit.
  * Throws (and so rolls back the surrounding transaction) if it doesn't balance.
  */
-function postJournal({ journal_date, reference, description, source_type, source_id, lines }) {
+function postJournal({ entity_id, journal_date, reference, description, source_type, source_id, lines }) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(journal_date || '')) throw httpError(400, 'Journal date is required');
+  const entity = requireEntity(entity_id);
   const period = assertPeriodOpen(journal_date);
   const posted = lines
     .map((l) => ({ ...l, debit: round2(l.debit || 0), credit: round2(l.credit || 0) }))
     .filter((l) => l.debit !== 0 || l.credit !== 0);
   if (posted.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
+  checkJournalLines(posted, entity.id);
+
+  const info = db
+    .prepare('INSERT INTO journals (journal_date, period, entity_id, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(journal_date, period, entity.id, reference || null, description, source_type, source_id ?? null);
+  const journalId = Number(info.lastInsertRowid);
+  insertLedgerLines(journalId, entity.id, journal_date, description, posted);
+  return journalId;
+}
+
+/** Validate non-zero journal lines (accounts, entity, cost centres, amounts) and that they balance. */
+function checkJournalLines(posted, entityId) {
+  if (posted.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
   for (const l of posted) {
     const account = requireAccount(l.account_code);
+    assertAccountForEntity(account, entityId);
     l.cost_center = resolveCostCenter(account, l.cost_center);
     if (l.debit < 0 || l.credit < 0) throw httpError(400, 'Debit and credit amounts cannot be negative');
+    if (l.debit && l.credit) throw httpError(400, 'A line can have a debit or a credit, not both');
   }
   const dr = round2(posted.reduce((s, l) => s + l.debit, 0));
   const cr = round2(posted.reduce((s, l) => s + l.credit, 0));
   if (Math.abs(dr - cr) > 0.001) throw httpError(400, `Journal does not balance: debits ${dr.toFixed(2)} vs credits ${cr.toFixed(2)}`);
+}
 
-  const info = db
-    .prepare('INSERT INTO journals (journal_date, period, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(journal_date, period, reference || null, description, source_type, source_id ?? null);
-  const journalId = Number(info.lastInsertRowid);
+function insertLedgerLines(journalId, entityId, date, description, posted) {
   const insert = db.prepare(
-    `INSERT INTO ledger_entries (journal_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO ledger_entries (journal_id, entity_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center, invoice_line_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const l of posted) {
-    insert.run(journalId, journal_date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center);
+    insert.run(journalId, entityId, date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center, l.invoice_line_id || null);
   }
-  return journalId;
 }
 
 /**
@@ -336,7 +388,7 @@ function postJournal({ journal_date, reference, description, source_type, source
  * and translated to GBP at the given rate; any 1p rounding difference from the
  * translation is absorbed by the largest line so the GBP journal still balances.
  */
-function createManualJournal({ journal_date, reference, description, currency, exchange_rate, lines }) {
+function createManualJournal({ entity_id, journal_date, reference, description, currency, exchange_rate, lines }) {
   const company = getCompany();
   currency = currency || company.base_currency;
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
@@ -375,6 +427,7 @@ function createManualJournal({ journal_date, reference, description, currency, e
 
   return transaction(() => {
     const id = postJournal({
+      entity_id,
       journal_date,
       reference,
       description: String(description).trim(),
@@ -386,10 +439,26 @@ function createManualJournal({ journal_date, reference, description, currency, e
   });
 }
 
+// Journals of these types can be changed in full; the others follow their source
+// document (invoice, payment, bank line, asset, depreciation) and can only be reclassified.
+const FULL_EDIT_SOURCES = ['manual', 'opening'];
+const SOURCE_NAMES = { invoice: 'an invoice', payment: 'a payment', bank: 'a bank statement line', asset: 'an asset purchase', depreciation: 'the depreciation run' };
+
 function getJournal(id) {
-  const j = db.prepare('SELECT * FROM journals WHERE id = ?').get(id);
+  const j = db
+    .prepare(
+      `SELECT j.*, e.code AS entity_code, e.name AS entity_name, p.status AS period_status
+       FROM journals j JOIN entities e ON e.id = j.entity_id JOIN periods p ON p.period = j.period WHERE j.id = ?`
+    )
+    .get(id);
   if (!j) return null;
-  return { ...j, lines: ledgerEntriesForJournal(id) };
+  const history = db.prepare('SELECT id, changed_at, summary FROM journal_audit WHERE journal_id = ? ORDER BY id DESC').all(id);
+  return {
+    ...j,
+    edit_mode: j.period_status === 'closed' ? 'locked' : FULL_EDIT_SOURCES.includes(j.source_type) ? 'full' : 'reclassify',
+    lines: ledgerEntriesForJournal(id),
+    history,
+  };
 }
 
 function ledgerEntriesForJournal(journalId) {
@@ -401,35 +470,42 @@ function ledgerEntriesForJournal(journalId) {
     .all(journalId);
 }
 
-function listJournals() {
+function listJournals(entityId) {
+  const E = entityOf(entityId);
   return db
     .prepare(
-      `SELECT j.*, COALESCE(SUM(l.debit), 0) AS total, COUNT(l.id) AS line_count
-       FROM journals j LEFT JOIN ledger_entries l ON l.journal_id = j.id
+      `SELECT j.*, e.code AS entity_code, COALESCE(SUM(l.debit), 0) AS total, COUNT(l.id) AS line_count
+       FROM journals j JOIN entities e ON e.id = j.entity_id LEFT JOIN ledger_entries l ON l.journal_id = j.id
+       WHERE (? IS NULL OR j.entity_id = ?)
        GROUP BY j.id ORDER BY j.journal_date DESC, j.id DESC`
     )
-    .all()
+    .all(E, E)
     .map((j) => ({ ...j, total: round2(j.total) }));
 }
 
-function listLedgerEntries() {
+function listLedgerEntries(entityId) {
+  const E = entityOf(entityId);
   return db
     .prepare(
-      `SELECT l.*, a.name AS account_name, j.source_type, j.reference
+      `SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
+       JOIN entities e ON e.id = l.entity_id
+       WHERE (? IS NULL OR l.entity_id = ?)
        ORDER BY l.entry_date, l.id`
     )
-    .all();
+    .all(E, E);
 }
 
-function trialBalance() {
+function trialBalance(entityId) {
+  const E = entityOf(entityId);
   return db
     .prepare(
       `SELECT l.account_code, a.name AS account_name, a.category, SUM(l.debit) AS debit, SUM(l.credit) AS credit
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
+       WHERE (? IS NULL OR l.entity_id = ?)
        GROUP BY l.account_code ORDER BY l.account_code`
     )
-    .all()
+    .all(E, E)
     .map((r) => ({
       account_code: r.account_code,
       account_name: r.account_name,
@@ -451,12 +527,17 @@ const INVOICE_KIND = { purchase: 'supplier', sale: 'customer' };
  * GBP amounts are translated per line; the GBP total is the sum of the
  * translated parts so the journal always balances to the penny.
  */
-function createInvoice({ type, party_id, invoice_number, invoice_date, currency, exchange_rate, notes, lines }) {
+function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, currency, exchange_rate, notes, lines }) {
   if (!INVOICE_KIND[type]) throw httpError(400, 'Invoice type must be purchase or sale');
+  const entity = requireEntity(entity_id);
   const company = getCompany();
   const party = getParty(INVOICE_KIND[type], party_id);
   if (!party) throw httpError(400, `Unknown ${INVOICE_KIND[type]}`);
   if (!invoice_number || !invoice_date) throw httpError(400, 'Invoice number and date are required');
+  const dup = db
+    .prepare('SELECT 1 FROM invoices WHERE entity_id = ? AND type = ? AND party_id = ? AND invoice_number = ?')
+    .get(entity.id, type, party_id, String(invoice_number).trim());
+  if (dup) throw httpError(400, `Invoice ${invoice_number} from/to ${party.name} is already booked in ${entity.name}`);
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
   exchange_rate = currency === company.base_currency ? 1 : Number(exchange_rate);
   if (!(exchange_rate > 0)) throw httpError(400, 'Exchange rate must be a positive number');
@@ -493,16 +574,18 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
   return transaction(() => {
     const info = db
       .prepare(
-        `INSERT INTO invoices (type, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(type, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null);
+      .run(type, entity.id, party_id, String(invoice_number).trim(), invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null);
     const invoiceId = Number(info.lastInsertRowid);
     const insertLine = db.prepare(
       `INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const l of parsed) insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center);
+    for (const l of parsed) {
+      l.id = Number(insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center).lastInsertRowid);
+    }
 
     const isPurchase = type === 'purchase';
     const foreign = currency !== company.base_currency;
@@ -511,6 +594,7 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
     const journalLines = parsed.map((l) => ({
       account_code: l.account_code,
       cost_center: l.cost_center,
+      invoice_line_id: l.id,
       [isPurchase ? 'debit' : 'credit']: l.base_net,
       currency,
       fx_note: note(l.net_amount),
@@ -532,14 +616,15 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
       fx_note: note(total_amount),
       description: desc,
     });
-    postJournal({ journal_date: invoice_date, reference: invoice_number, description: desc, source_type: 'invoice', source_id: invoiceId, lines: journalLines });
+    postJournal({ entity_id: entity.id, journal_date: invoice_date, reference: invoice_number, description: desc, source_type: 'invoice', source_id: invoiceId, lines: journalLines });
     return getInvoice(invoiceId);
   });
 }
 
 function invoiceSelect(where) {
-  return `SELECT i.*, COALESCE(s.name, c.name) AS party_name
+  return `SELECT i.*, COALESCE(s.name, c.name) AS party_name, e.code AS entity_code, e.name AS entity_name
           FROM invoices i
+          JOIN entities e ON e.id = i.entity_id
           LEFT JOIN suppliers s ON i.type = 'purchase' AND s.id = i.party_id
           LEFT JOIN customers c ON i.type = 'sale' AND c.id = i.party_id
           ${where}`;
@@ -550,11 +635,12 @@ function getInvoice(id) {
   return invoice ? attachComputed(invoice) : null;
 }
 
-function listInvoices(type) {
-  const rows = type
-    ? db.prepare(invoiceSelect('WHERE i.type = ? ORDER BY i.invoice_date DESC, i.id DESC')).all(type)
-    : db.prepare(invoiceSelect('ORDER BY i.invoice_date DESC, i.id DESC')).all();
-  return rows.map(attachComputed);
+function listInvoices(type, entityId) {
+  const E = entityOf(entityId);
+  return db
+    .prepare(invoiceSelect('WHERE (? IS NULL OR i.type = ?) AND (? IS NULL OR i.entity_id = ?) ORDER BY i.invoice_date DESC, i.id DESC'))
+    .all(type || null, type || null, E, E)
+    .map(attachComputed);
 }
 
 function attachComputed(invoice) {
@@ -622,6 +708,7 @@ function createPayment({ invoice_id, payment_date, amount, bank_account, bank_am
   if (!payment_date) throw httpError(400, 'Payment date is required');
   const bank = getAccount(bank_account);
   if (!bank || !bank.bank_currency) throw httpError(400, 'Choose a bank account');
+  assertAccountForEntity(bank, invoice.entity_id);
   amount = round2(Number(amount));
   if (!(amount > 0)) throw httpError(400, 'Amount settled must be a positive number');
   if (amount > invoice.remaining_amount + 0.005) {
@@ -663,6 +750,7 @@ function createPayment({ invoice_id, payment_date, amount, bank_account, bank_am
       lines.push({ account_code: accountByRole(ROLES.FX_LOSS).code, debit: -fx_gain_loss, description: `${desc} - FX loss` });
     }
     const journalId = postJournal({
+      entity_id: invoice.entity_id,
       journal_date: payment_date,
       reference: invoice.invoice_number,
       description: desc,
@@ -726,18 +814,20 @@ function plTotals(t) {
  * liabilities/equity/income as credits). A cost centre filter narrows the
  * P&L only; the balance sheet and cash flow always cover the whole company.
  */
-function financialStatements({ from, to, cost_center }) {
+function financialStatements({ from, to, cost_center, entity_id }) {
   checkRange(from, to);
+  const E = entityOf(entity_id);
 
   const rows = db
     .prepare(
       `SELECT a.code, a.name, a.category,
          COALESCE(SUM(CASE WHEN ${OPENING_SQL} THEN l.debit - l.credit END), 0) AS opening,
          COALESCE(SUM(CASE WHEN ${MOVEMENT_SQL} THEN l.debit - l.credit END), 0) AS movement
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code LEFT JOIN journals j ON j.id = l.journal_id
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (? IS NULL OR l.entity_id = ?)
+       LEFT JOIN journals j ON j.id = l.journal_id
        GROUP BY a.code ORDER BY a.code`
     )
-    .all(from, to, from, to)
+    .all(from, to, from, to, E, E)
     .map((r) => ({ ...r, opening: round2(r.opening), movement: round2(r.movement), closing: round2(r.opening + r.movement) }));
 
   const signFor = (cat) => (cat.side === 'asset' || cat.side === 'expense' ? 1 : -1);
@@ -761,9 +851,9 @@ function financialStatements({ from, to, cost_center }) {
       db
         .prepare(
           `SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
-           WHERE l.entry_date >= ? AND l.entry_date <= ?${f.sql} GROUP BY l.account_code`
+           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (? IS NULL OR l.entity_id = ?)${f.sql} GROUP BY l.account_code`
         )
-        .all(from, to, ...f.params)
+        .all(from, to, E, E, ...f.params)
         .map((r) => [r.code, round2(r.movement)])
     );
     plMovement = (r) => filtered[r.code] || 0;
@@ -815,6 +905,7 @@ function financialStatements({ from, to, cost_center }) {
     to,
     opening_date: dayBefore(from),
     cost_center: cost_center || null,
+    entity: E ? getEntity(E) : null,
     profit_and_loss: {
       ...pl,
       ...totals,
@@ -844,16 +935,17 @@ function financialStatements({ from, to, cost_center }) {
  * P&L per cost centre for a period: one column per cost centre (plus
  * "unallocated"), one row per P&L category, with the subtotals.
  */
-function costCenterReport({ from, to }) {
+function costCenterReport({ from, to, entity_id }) {
   checkRange(from, to);
+  const E = entityOf(entity_id);
   const rows = db
     .prepare(
       `SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE l.entry_date >= ? AND l.entry_date <= ?
+       WHERE l.entry_date >= ? AND l.entry_date <= ? AND (? IS NULL OR l.entity_id = ?)
        GROUP BY cc, a.category`
     )
-    .all(from, to);
+    .all(from, to, E, E);
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
   const columns = [...listCostCenters().map((c) => ({ code: c.code, name: c.name })), { code: '', name: 'Unallocated' }];
   const byCc = {};
@@ -879,8 +971,9 @@ const ratio = (a, b) => (b ? Math.round((a / b) * 10000) / 10000 : null);
  * Financial KPIs for a period: profitability, liquidity, solvency and
  * working capital, plus a monthly trend and costs per cost centre.
  */
-function kpis({ from, to }) {
-  const fs = financialStatements({ from, to });
+function kpis({ from, to, entity_id }) {
+  const E = entityOf(entity_id);
+  const fs = financialStatements({ from, to, entity_id: E });
   const pl = fs.profit_and_loss;
   const bs = fs.balance_sheet.closing;
   const cat = (list, key) => (list.find((g) => g.key === key) || { total: 0 }).total;
@@ -894,7 +987,9 @@ function kpis({ from, to }) {
 
   // Invoiced amounts (incl. VAT, in GBP) for the period, to compare with AR/AP balances.
   const invoiced = (type) =>
-    db.prepare('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ?').get(type, from, to).t;
+    db
+      .prepare('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ? AND (? IS NULL OR entity_id = ?)')
+      .get(type, from, to, E, E).t;
   const salesInvoiced = invoiced('sale');
   const purchasesInvoiced = invoiced('purchase');
 
@@ -903,16 +998,16 @@ function kpis({ from, to }) {
     .prepare(
       `SELECT substr(l.entry_date, 1, 7) AS period, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE ${MOVEMENT_SQL}
+       WHERE ${MOVEMENT_SQL} AND (? IS NULL OR l.entity_id = ?)
        GROUP BY period, a.category`
     )
-    .all(from, to);
+    .all(from, to, E, E);
   const cashBefore = db
     .prepare(
       `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE a.category = 'cash' AND ${OPENING_SQL}`
+       WHERE a.category = 'cash' AND ${OPENING_SQL} AND (? IS NULL OR l.entity_id = ?)`
     )
-    .get(from, to).t;
+    .get(from, to, E, E).t;
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
   const months = [];
   let runningCash = cashBefore;
@@ -929,7 +1024,7 @@ function kpis({ from, to }) {
   }
 
   // Operating costs (cost of sales, overheads, depreciation) per cost centre
-  const ccReport = costCenterReport({ from, to });
+  const ccReport = costCenterReport({ from, to, entity_id: E });
   const cost_by_cost_center = ccReport.cost_centers
     .map((c) => ({ code: c.code, name: c.name, costs: round2(c.cost_of_sales + c.overheads + c.depreciation) }))
     .filter((c) => c.costs !== 0)
@@ -966,11 +1061,196 @@ function kpis({ from, to }) {
   };
 }
 
+// ---------- Editing posted journals ----------
+
+function journalSnapshot(j) {
+  return {
+    journal_date: j.journal_date,
+    reference: j.reference,
+    description: j.description,
+    lines: j.lines.map((l) => ({ id: l.id, account_code: l.account_code, cost_center: l.cost_center, description: l.description, debit: l.debit, credit: l.credit })),
+  };
+}
+
+function describeChanges(before, after) {
+  const changes = [];
+  if (before.journal_date !== after.journal_date) changes.push(`date ${before.journal_date} → ${after.journal_date}`);
+  if ((before.reference || '') !== (after.reference || '')) changes.push('reference');
+  if (before.description !== after.description) changes.push('description');
+  const key = (l) => `${l.account_code}|${l.cost_center || ''}|${l.debit}|${l.credit}`;
+  const b = before.lines.map(key).sort().join(';');
+  const a = after.lines.map(key).sort().join(';');
+  if (b !== a) {
+    const byId = Object.fromEntries(before.lines.map((l) => [l.id, l]));
+    for (const l of after.lines) {
+      const old = byId[l.id];
+      if (!old) continue;
+      if (old.account_code !== l.account_code) changes.push(`account ${old.account_code} → ${l.account_code}`);
+      if ((old.cost_center || '') !== (l.cost_center || '')) changes.push(`cost centre ${old.cost_center || '-'} → ${l.cost_center || '-'}`);
+    }
+    if (!changes.some((c) => c.startsWith('account') || c.startsWith('cost centre')) || before.lines.length !== after.lines.length) changes.push('lines/amounts');
+  }
+  return changes.length ? `Changed ${[...new Set(changes)].join(', ')}` : 'Saved without changes';
+}
+
+/**
+ * Change a posted journal (never in a closed period; every change is logged).
+ *   manual / opening journals: everything - date, reference, description and
+ *     the lines (GBP amounts), which must still balance.
+ *   journals from invoices, payments, bank lines, assets and depreciation:
+ *     their amounts and dates follow the source document, so only the
+ *     description can change and P&L lines can move to another P&L account
+ *     and/or cost centre (a reclassification). An invoice line follows along.
+ */
+function editJournal(id, data) {
+  const j = getJournal(id);
+  if (!j) throw httpError(404, 'Journal not found');
+  if (j.edit_mode === 'locked') throw httpError(400, `Period ${j.period} is closed - reopen it in Setup to change this journal`);
+  const before = journalSnapshot(j);
+  const description = data.description !== undefined ? String(data.description).trim() : j.description;
+  if (!description) throw httpError(400, 'Description is required');
+
+  return transaction(() => {
+    if (j.edit_mode === 'full') {
+      const date = data.journal_date || j.journal_date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw httpError(400, 'Journal date is required');
+      const period = assertPeriodOpen(date);
+      if (!Array.isArray(data.lines)) throw httpError(400, 'Journal lines are required');
+      const oldById = Object.fromEntries(j.lines.map((l) => [l.id, l]));
+      const posted = data.lines
+        .map((l) => {
+          const debit = round2(Number(l.debit) || 0);
+          const credit = round2(Number(l.credit) || 0);
+          const old = l.id ? oldById[l.id] : null;
+          // Keep the original currency note only while the amount is unchanged.
+          const keepFx = old && old.debit === debit && old.credit === credit && old.account_code === l.account_code;
+          return {
+            account_code: l.account_code,
+            cost_center: l.cost_center || null,
+            description: l.description ? String(l.description).trim() : null,
+            debit,
+            credit,
+            currency: keepFx ? old.currency : null,
+            fx_note: keepFx ? old.fx_note : null,
+          };
+        })
+        .filter((l) => l.debit !== 0 || l.credit !== 0);
+      checkJournalLines(posted, j.entity_id);
+      db.prepare('DELETE FROM ledger_entries WHERE journal_id = ?').run(id);
+      insertLedgerLines(id, j.entity_id, date, description, posted);
+      db.prepare('UPDATE journals SET journal_date = ?, period = ?, reference = ?, description = ? WHERE id = ?').run(
+        date,
+        period,
+        data.reference !== undefined ? String(data.reference).trim() || null : j.reference,
+        description,
+        id
+      );
+    } else {
+      const byId = Object.fromEntries(j.lines.map((l) => [l.id, l]));
+      for (const change of data.lines || []) {
+        const line = byId[change.id];
+        if (!line) throw httpError(400, 'Unknown journal line');
+        const oldAcc = getAccount(line.account_code);
+        const newAcc = requireAccount(change.account_code || line.account_code);
+        if (newAcc.code !== oldAcc.code && (oldAcc.statement !== 'PL' || newAcc.statement !== 'PL')) {
+          throw httpError(400, `This journal comes from ${SOURCE_NAMES[j.source_type] || 'a source document'}: only its P&L lines can move to another P&L account, ${oldAcc.code} ${oldAcc.name} follows the document`);
+        }
+        assertAccountForEntity(newAcc, j.entity_id);
+        const cc = resolveCostCenter(newAcc, change.cost_center);
+        db.prepare('UPDATE ledger_entries SET account_code = ?, cost_center = ? WHERE id = ?').run(newAcc.code, cc, line.id);
+        if (line.invoice_line_id) {
+          db.prepare('UPDATE invoice_lines SET account_code = ?, cost_center = ? WHERE id = ?').run(newAcc.code, cc, line.invoice_line_id);
+        }
+      }
+      db.prepare('UPDATE journals SET description = ? WHERE id = ?').run(description, id);
+    }
+    const after = journalSnapshot(getJournal(id));
+    db.prepare("UPDATE journals SET edit_count = edit_count + 1, edited_at = datetime('now') WHERE id = ?").run(id);
+    db.prepare('INSERT INTO journal_audit (journal_id, summary, before_json, after_json) VALUES (?, ?, ?, ?)').run(
+      id,
+      describeChanges(before, after),
+      JSON.stringify(before),
+      JSON.stringify(after)
+    );
+    return getJournal(id);
+  });
+}
+
+// ---------- Account overview ----------
+
+/**
+ * Everything booked on one ledger account in a period: opening balance, each
+ * entry with a running balance, and totals per month and per cost centre.
+ * Amounts are also given with the account's natural sign (debit-positive for
+ * assets and costs, credit-positive for liabilities, equity and income).
+ */
+function accountDetail(code, { from, to, entity_id, cost_center }) {
+  const account = getAccount(code);
+  if (!account) throw httpError(404, 'Account not found');
+  checkRange(from, to);
+  const E = entityOf(entity_id);
+  const f = costCenterFilter(cost_center);
+  const sign = account.side === 'asset' || account.side === 'expense' ? 1 : -1;
+  const opening = round2(
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN journals j ON j.id = l.journal_id
+         WHERE l.account_code = ? AND ${OPENING_SQL} AND (? IS NULL OR l.entity_id = ?)${f.sql}`
+      )
+      .get(code, from, to, E, E, ...f.params).t
+  );
+  const entries = db
+    .prepare(
+      `SELECT l.id, l.journal_id, l.entry_date, l.debit, l.credit, l.description, l.cost_center, l.fx_note,
+              j.reference, j.source_type, e.code AS entity_code
+       FROM ledger_entries l JOIN journals j ON j.id = l.journal_id JOIN entities e ON e.id = l.entity_id
+       WHERE l.account_code = ? AND ${MOVEMENT_SQL} AND (? IS NULL OR l.entity_id = ?)${f.sql}
+       ORDER BY l.entry_date, l.id`
+    )
+    .all(code, from, to, E, E, ...f.params);
+  let running = opening;
+  for (const e of entries) {
+    running = round2(running + e.debit - e.credit);
+    e.balance = running;
+  }
+  const debit = round2(entries.reduce((t, e) => t + e.debit, 0));
+  const credit = round2(entries.reduce((t, e) => t + e.credit, 0));
+  const group = (keyOf) => {
+    const out = {};
+    for (const e of entries) {
+      const k = keyOf(e);
+      out[k] = out[k] || { key: k, debit: 0, credit: 0 };
+      out[k].debit = round2(out[k].debit + e.debit);
+      out[k].credit = round2(out[k].credit + e.credit);
+    }
+    return Object.values(out).map((g) => ({ ...g, net: round2(sign * (g.debit - g.credit)) }));
+  };
+  const ccNames = Object.fromEntries(listCostCenters().map((c) => [c.code, c.name]));
+  return {
+    account,
+    from,
+    to,
+    entity: E ? getEntity(E) : null,
+    cost_center: cost_center || null,
+    sign,
+    opening,
+    debit,
+    credit,
+    closing: round2(opening + debit - credit),
+    entries,
+    by_month: group((e) => e.entry_date.slice(0, 7)).sort((a, b) => a.key.localeCompare(b.key)),
+    by_cost_center: group((e) => e.cost_center || '')
+      .map((g) => ({ ...g, name: g.key ? `${g.key} ${ccNames[g.key] || ''}` : 'Unallocated' }))
+      .sort((a, b) => b.net - a.net),
+  };
+}
+
 // ---------- Dashboard ----------
 
-function dashboardSummary() {
+function dashboardSummary(entityId) {
+  const E = entityOf(entityId);
   const company = getCompany();
-  const invoices = listInvoices();
+  const invoices = listInvoices(null, E);
   const summarise = (type) => {
     const list = invoices.filter((i) => i.type === type);
     const open = list.filter((i) => i.status !== 'Paid');
@@ -984,13 +1264,16 @@ function dashboardSummary() {
     }
     return { total_invoices: list.length, open_invoices: open.length, outstanding_base: round2(open.reduce((s, i) => s + i.remaining_base, 0)), by_currency };
   };
-  const tb = trialBalance();
+  const tb = trialBalance(E);
   const tbDebit = round2(tb.reduce((s, r) => s + r.debit, 0));
   const tbCredit = round2(tb.reduce((s, r) => s + r.credit, 0));
   const cash = round2(tb.filter((r) => r.category === 'cash').reduce((s, r) => s + r.balance, 0));
-  const realisedFx = db.prepare('SELECT COALESCE(SUM(fx_gain_loss), 0) AS t FROM payments').get().t;
+  const realisedFx = db
+    .prepare('SELECT COALESCE(SUM(p.fx_gain_loss), 0) AS t FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE (? IS NULL OR i.entity_id = ?)')
+    .get(E, E).t;
   return {
     company,
+    entity: E ? getEntity(E) : null,
     payables: summarise('purchase'),
     receivables: summarise('sale'),
     cash_balance: cash,
@@ -1006,6 +1289,14 @@ module.exports = {
   ROLES,
   httpError,
   getCompany,
+  listEntities,
+  getEntity,
+  requireEntity,
+  createEntity,
+  entityOf,
+  assertAccountForEntity,
+  editJournal,
+  accountDetail,
   listAccounts,
   getAccount,
   listBankAccounts,

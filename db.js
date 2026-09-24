@@ -12,13 +12,20 @@ db.exec('PRAGMA journal_mode = WAL;');
 
 // Bump this whenever the schema changes incompatibly. An older database is
 // dropped and rebuilt (then reseeded with demo data on startup).
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   name TEXT NOT NULL,
   base_currency TEXT NOT NULL
+);
+
+-- Legal entities. Every journal, invoice, asset and bank statement belongs to one.
+CREATE TABLE IF NOT EXISTS entities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL
 );
 
 -- Chart of accounts. "category" maps each ledger account onto a line of the
@@ -31,6 +38,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   role TEXT UNIQUE,
   bank_currency TEXT,
   iban TEXT,
+  -- NULL: shared by all entities; set: only that entity can post to it (e.g. its bank accounts).
+  entity_id INTEGER REFERENCES entities(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -82,6 +91,7 @@ CREATE TABLE IF NOT EXISTS periods (
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL CHECK (type IN ('purchase', 'sale')),
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
   party_id INTEGER NOT NULL,
   invoice_number TEXT NOT NULL,
   invoice_date TEXT NOT NULL,
@@ -132,11 +142,24 @@ CREATE TABLE IF NOT EXISTS journals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   journal_date TEXT NOT NULL,
   period TEXT NOT NULL REFERENCES periods(period),
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
   reference TEXT,
   description TEXT NOT NULL,
   source_type TEXT NOT NULL,
   source_id INTEGER,
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  edited_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Every change to a posted journal: what it looked like before and after.
+CREATE TABLE IF NOT EXISTS journal_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  journal_id INTEGER NOT NULL REFERENCES journals(id),
+  changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  summary TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ledger_entries (
@@ -149,7 +172,10 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   currency TEXT,
   fx_note TEXT,
   description TEXT NOT NULL,
-  cost_center TEXT REFERENCES cost_centers(code)
+  cost_center TEXT REFERENCES cost_centers(code),
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
+  -- The invoice line this entry was posted from, so a reclassification updates the invoice too.
+  invoice_line_id INTEGER REFERENCES invoice_lines(id)
 );
 
 -- Daily ECB reference rates, stored as "1 unit of currency = rate_to_base GBP".
@@ -163,6 +189,7 @@ CREATE TABLE IF NOT EXISTS fx_rates (
 
 CREATE TABLE IF NOT EXISTS bank_statements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
   filename TEXT,
   bank_account TEXT NOT NULL REFERENCES accounts(code),
   statement_ref TEXT,
@@ -195,6 +222,7 @@ CREATE TABLE IF NOT EXISTS bank_statement_lines (
 CREATE TABLE IF NOT EXISTS fixed_assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   asset_number TEXT NOT NULL UNIQUE,
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
   name TEXT NOT NULL,
   description TEXT,
   asset_type TEXT NOT NULL,
@@ -225,6 +253,9 @@ CREATE INDEX IF NOT EXISTS idx_ledger_journal ON ledger_entries(journal_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_code, entry_date);
 CREATE INDEX IF NOT EXISTS idx_bank_lines_statement ON bank_statement_lines(statement_id);
 CREATE INDEX IF NOT EXISTS idx_journals_period ON journals(period);
+CREATE INDEX IF NOT EXISTS idx_journals_entity ON journals(entity_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entity ON ledger_entries(entity_id, account_code);
+CREATE INDEX IF NOT EXISTS idx_invoices_entity ON invoices(entity_id, type);
 CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 `;
 

@@ -11,9 +11,11 @@ const ACCOUNTS = [
   { code: '0210', name: 'Machinery - accumulated depreciation', category: 'accumulated_depreciation', role: ROLES.MACHINERY_ACCUM },
   { code: '0300', name: 'Inventory - investment', category: 'fixed_assets', role: ROLES.INVENTORY_COST },
   { code: '0310', name: 'Inventory - accumulated depreciation', category: 'accumulated_depreciation', role: ROLES.INVENTORY_ACCUM },
-  { code: '1000', name: 'Bank - GBP', category: 'cash', bank_currency: 'GBP', iban: 'GB29NWBK60161331926819' },
-  { code: '1010', name: 'Bank - EUR', category: 'cash', bank_currency: 'EUR', iban: 'DE89370400440532013000' },
-  { code: '1020', name: 'Bank - USD', category: 'cash', bank_currency: 'USD', iban: 'GB33BUKB20201555555555' },
+  { code: '0500', name: 'Investment in subsidiaries', category: 'fixed_assets', entity: 'NBH' },
+  { code: '1000', name: 'Bank - GBP', category: 'cash', bank_currency: 'GBP', iban: 'GB29NWBK60161331926819', entity: 'NBT' },
+  { code: '1010', name: 'Bank - EUR', category: 'cash', bank_currency: 'EUR', iban: 'DE89370400440532013000', entity: 'NBT' },
+  { code: '1020', name: 'Bank - USD', category: 'cash', bank_currency: 'USD', iban: 'GB33BUKB20201555555555', entity: 'NBT' },
+  { code: '1050', name: 'Bank - GBP (Holding)', category: 'cash', bank_currency: 'GBP', iban: 'GB82WEST12345698765432', entity: 'NBH' },
   { code: '1100', name: 'Accounts receivable', category: 'receivables', role: ROLES.AR },
   { code: '1200', name: 'VAT recoverable (input VAT)', category: 'other_current_assets', role: ROLES.VAT_IN },
   { code: '1300', name: 'Prepayments', category: 'other_current_assets' },
@@ -24,12 +26,14 @@ const ACCOUNTS = [
   { code: '3100', name: 'Retained earnings', category: 'equity' },
   { code: '4000', name: 'Sales - products', category: 'revenue' },
   { code: '4100', name: 'Sales - services', category: 'revenue' },
+  { code: '4200', name: 'Management fees charged', category: 'revenue' },
   { code: '5000', name: 'Purchases - materials & components', category: 'cost_of_sales' },
   { code: '5100', name: 'Freight & packaging', category: 'cost_of_sales' },
   { code: '6000', name: 'Rent & premises', category: 'overheads' },
   { code: '6100', name: 'Salaries & wages', category: 'overheads' },
   { code: '6200', name: 'Office & facilities', category: 'overheads' },
   { code: '6300', name: 'Professional fees', category: 'overheads' },
+  { code: '6400', name: 'Management fees (group)', category: 'overheads' },
   { code: '6500', name: 'Depreciation - machinery', category: 'depreciation', role: ROLES.MACHINERY_DEPR },
   { code: '6510', name: 'Depreciation - inventory', category: 'depreciation', role: ROLES.INVENTORY_DEPR },
   { code: '7000', name: 'Realised FX gain', category: 'financial_income', role: ROLES.FX_GAIN },
@@ -70,8 +74,11 @@ function seedIfEmpty() {
 
 function seed() {
   db.prepare('INSERT INTO company (id, name, base_currency) VALUES (1, ?, ?)').run('Northbridge Trading Ltd', 'GBP');
+  const T = acct.createEntity({ code: 'NBT', name: 'Northbridge Trading Ltd' }).id;
+  const H = acct.createEntity({ code: 'NBH', name: 'Northbridge Holding Ltd' }).id;
+  const ENTITY = { NBT: T, NBH: H };
   acct.ensurePeriods('2026-01', '2026-12');
-  for (const a of ACCOUNTS) acct.createAccount(a);
+  for (const a of ACCOUNTS) acct.createAccount({ ...a, entity_id: a.entity ? ENTITY[a.entity] : null });
   for (const c of COST_CENTERS) acct.createCostCenter(c);
 
   const supplier = {};
@@ -82,6 +89,8 @@ function seed() {
     { name: 'Lumiere Packaging SARL', country: 'France', currency: 'EUR', vat_number: 'FR445566778', iban: 'FR7630006000011234567890189', bic: 'AGRIFRPP' },
     { name: 'Canary Property Management Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB555666777', sort_code: '40-11-60', account_number: '31926819' },
     { name: 'Brightcut Laser Systems Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB777888999', sort_code: '30-94-57', account_number: '10442786' },
+    // Group company: Northbridge Holding charges Trading a monthly management fee.
+    { name: 'Northbridge Holding Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB111222333', sort_code: '60-16-13', account_number: '31926820' },
   ]) {
     supplier[s.name] = acct.createParty('supplier', s).id;
   }
@@ -91,6 +100,7 @@ function seed() {
     { name: 'Harlow Retail Group Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB998877665' },
     { name: 'Van Dijk Distributie B.V.', country: 'Netherlands', currency: 'EUR', vat_number: 'NL123456789B01' },
     { name: 'Bayside Imports LLC', country: 'United States', currency: 'USD', vat_number: null },
+    { name: 'Northbridge Trading Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB444555666' },
   ]) {
     customer[c.name] = acct.createParty('customer', c).id;
   }
@@ -100,6 +110,7 @@ function seed() {
   const sum = (type, key) => opening.filter((a) => a.asset_type === type).reduce((t, a) => t + a[key], 0);
   const nbv = opening.reduce((t, a) => t + a.acquisition_cost - a.opening_depreciation, 0);
   acct.postJournal({
+    entity_id: T,
     journal_date: BOOKS_START,
     reference: 'OPEN',
     description: 'Opening balances',
@@ -116,10 +127,11 @@ function seed() {
       { account_code: '3100', credit: nbv, description: 'Retained earnings from prior years' },
     ],
   });
-  for (const a of opening) assets.createAsset({ ...a, booking: 'existing', depreciation_start: '2026-06' });
+  for (const a of opening) assets.createAsset({ ...a, entity_id: T, booking: 'existing', depreciation_start: '2026-06' });
 
   // Bought during the year and paid straight from the bank: posted by the asset register itself.
   assets.createAsset({
+    entity_id: T,
     name: 'Warehouse shelving & scanners',
     description: 'Long-span shelving and 6 handheld barcode scanners',
     asset_type: 'inventory',
@@ -131,8 +143,8 @@ function seed() {
     contra_account: '1000',
   });
 
-  const journal = (journal_date, reference, description, lines) =>
-    acct.createManualJournal({ journal_date, reference, description, currency: 'GBP', exchange_rate: 1, lines });
+  const journal = (journal_date, reference, description, lines, entity_id = T) =>
+    acct.createManualJournal({ entity_id, journal_date, reference, description, currency: 'GBP', exchange_rate: 1, lines });
   for (const [date, month] of [['2026-06-28', 'June'], ['2026-07-28', 'July'], ['2026-08-28', 'August']]) {
     journal(date, `PAY-${month.slice(0, 3).toUpperCase()}`, `Salaries ${month} 2026`, [
       { account_code: '6100', debit: 2000, cost_center: '100' },
@@ -147,8 +159,8 @@ function seed() {
     { account_code: '2300', credit: 1200 },
   ]);
 
-  const inv = (type, party, invoice_number, invoice_date, currency, exchange_rate, lines, notes) =>
-    acct.createInvoice({ type, party_id: party, invoice_number, invoice_date, currency, exchange_rate, lines, notes });
+  const inv = (type, party, invoice_number, invoice_date, currency, exchange_rate, lines, notes, entity_id = T) =>
+    acct.createInvoice({ entity_id, type, party_id: party, invoice_number, invoice_date, currency, exchange_rate, lines, notes });
   const pay = (invoice, payment_date, amount, bank_account, bank_amount, bank_rate, notes) =>
     acct.createPayment({ invoice_id: invoice.id, payment_date, amount, bank_account, bank_amount, bank_rate, notes });
 
@@ -189,6 +201,7 @@ function seed() {
   ]);
   pay(p6, '2026-07-31', 50400, '1000', 50400, 1, 'Paid on delivery.');
   assets.createAsset({
+    entity_id: T,
     name: 'Fibre laser cutter 3 kW',
     description: 'Sheet metal laser cutter, bought on invoice BLS-2026-118',
     asset_type: 'machinery',
@@ -237,6 +250,42 @@ function seed() {
     { description: 'Storage systems - export', account_code: '4000', cost_center: '100', net_amount: 7200, vat_rate: 0 },
     { description: 'Commissioning', account_code: '4100', cost_center: '200', net_amount: 800, vat_rate: 0 },
   ]);
+
+  // ----- Northbridge Holding Ltd -----
+  // Opening position: it owns the shares in Trading and holds cash.
+  acct.postJournal({
+    entity_id: H,
+    journal_date: BOOKS_START,
+    reference: 'OPEN',
+    description: 'Opening balances',
+    source_type: 'opening',
+    lines: [
+      { account_code: '0500', debit: 150000, description: 'Shares in Northbridge Trading Ltd' },
+      { account_code: '1050', debit: 80000 },
+      { account_code: '3000', credit: 230000 },
+    ],
+  });
+  // Monthly management fee: a sales invoice in Holding and the matching purchase invoice in Trading.
+  for (const [month, date, paidOn] of [['06', '2026-06-30', '2026-07-15'], ['07', '2026-07-31', '2026-08-14'], ['08', '2026-08-31', null]]) {
+    const number = `NBH-MF-2026-${month}`;
+    const fee = [{ description: `Management services 2026-${month}`, net_amount: 4000, vat_rate: 20, cost_center: '300' }];
+    const sale = inv('sale', customer['Northbridge Trading Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '4200' })), 'Intercompany', H);
+    const purchase = inv('purchase', supplier['Northbridge Holding Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '6400' })), 'Intercompany');
+    if (paidOn) {
+      pay(purchase, paidOn, 4800, '1000', 4800, 1, 'Intercompany settlement');
+      pay(sale, paidOn, 4800, '1050', 4800, 1, 'Intercompany settlement');
+    }
+  }
+  for (const [date, month] of [['2026-06-28', 'June'], ['2026-07-28', 'July'], ['2026-08-28', 'August']]) {
+    journal(date, `DIR-${month.slice(0, 3).toUpperCase()}`, `Directors' fees ${month} 2026`, [
+      { account_code: '6100', debit: 2500, cost_center: '300' },
+      { account_code: '1050', credit: 2500 },
+    ], H);
+  }
+  journal('2026-08-31', 'ACC-AUG', 'Accrued audit fee', [
+    { account_code: '6300', debit: 800, cost_center: '300' },
+    { account_code: '2300', credit: 800 },
+  ], H);
 
   // Depreciation for every month that has ended, then close June as a worked example.
   assets.runDueDepreciation();

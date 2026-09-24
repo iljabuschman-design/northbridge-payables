@@ -15,6 +15,9 @@
         <div class="brand-name">Northbridge Trading Ltd</div>
         <div class="brand-sub">Invoices, bank &amp; financials · base currency <strong>GBP</strong></div>
       </div>
+      <label class="entity-picker">Entity
+        <select id="entity-select"></select>
+      </label>
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
@@ -71,6 +74,7 @@
         <button type="submit" class="btn">Update</button>
       </form>
     </div>
+    <p class="hint entity-note"></p>
     <div id="kpi-groups"></div>
     <div class="grid-2 even kpi-charts">
       <div class="panel">
@@ -130,7 +134,7 @@
       <h2>Statements</h2>
       <div class="table-wrap">
         <table class="table" id="statements-table">
-          <thead><tr><th>Uploaded</th><th>Bank account</th><th>Statement</th><th>Period</th><th>File</th><th class="num">Lines</th><th class="num">To post</th></tr></thead>
+          <thead><tr><th>Uploaded</th><th>Entity</th><th>Bank account</th><th>Statement</th><th>Period</th><th>File</th><th class="num">Lines</th><th class="num">To post</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -161,7 +165,7 @@
     </div>
     <div class="table-wrap">
       <table class="table" id="journals-table">
-        <thead><tr><th>Date</th><th>Period</th><th>Reference</th><th>Description</th><th>Source</th><th class="num">Lines</th><th class="num">Amount (GBP)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Period</th><th>Entity</th><th>Reference</th><th>Description</th><th>Source</th><th class="num">Lines</th><th class="num">Amount (GBP)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -172,9 +176,10 @@
     <div class="panel-header">
       <h2>General ledger — all entries</h2>
     </div>
+    <p class="hint">Click an account to see its overview, or a line to open its journal.</p>
     <div class="table-wrap">
       <table class="table" id="ledger-table">
-        <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Entity</th><th>Account</th><th>Cost centre</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -186,6 +191,40 @@
           <tbody></tbody>
         </table>
       </div>
+    </div>
+  </section>
+
+  <!-- Ledger account overview (opened from any account link) -->
+  <section id="view-account" class="view" hidden>
+    <a href="#" class="back-link" id="account-back">← Back</a>
+    <div class="panel-header wrap">
+      <div>
+        <h2 id="account-title"></h2>
+        <div class="hint" id="account-meta"></div>
+      </div>
+      <form class="period-row period-form" id="form-account-period">
+        <label>From <select name="from"></select></label>
+        <label>To <select name="to"></select></label>
+        <label>Cost centre <select name="cost_center"></select></label>
+        <button type="submit" class="btn">Update</button>
+      </form>
+    </div>
+    <p class="hint entity-note"></p>
+    <div class="cards" id="account-cards"></div>
+    <div class="grid-2 even">
+      <div class="panel">
+        <h2>Per month</h2>
+        <div class="table-wrap"><table class="table" id="account-months"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Per cost centre</h2>
+        <div class="table-wrap"><table class="table" id="account-ccs"></table></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Entries</h2>
+      <p class="hint">Click an entry to open (and edit) its journal.</p>
+      <div class="table-wrap"><table class="table" id="account-entries"></table></div>
     </div>
   </section>
 
@@ -217,7 +256,7 @@
       </div>
       <div class="table-wrap">
         <table class="table" id="assets-table">
-          <thead><tr><th>Asset</th><th>Name</th><th>Type</th><th>Cost centre</th><th>Acquired</th><th class="num">Cost</th><th class="num">% / year</th><th class="num">Accumulated</th><th class="num">Book value</th><th class="num">Per month</th><th>Status</th></tr></thead>
+          <thead><tr><th>Asset</th><th>Entity</th><th>Name</th><th>Type</th><th>Cost centre</th><th>Acquired</th><th class="num">Cost</th><th class="num">% / year</th><th class="num">Accumulated</th><th class="num">Book value</th><th class="num">Per month</th><th>Status</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -236,6 +275,7 @@
         <label class="check"><input type="checkbox" id="fin-detail" checked /> Show accounts</label>
       </form>
     </div>
+    <p class="hint entity-note"></p>
     <div class="fin-grid">
       <div class="panel">
         <h2>Profit &amp; loss</h2>
@@ -367,6 +407,12 @@
       <h3>Manual journals &amp; bank statements</h3>
       <p>Manual journals can post to any account and must balance before they are saved. Bank statements are imported from CAMT files and linked to a bank ledger account (automatically via the IBAN once known). Each line is booked against an opposing account or matched to an open invoice. Note that a manual journal or bank line posted directly to accounts receivable/payable does not mark any invoice as paid; use the invoice option for that.</p>
 
+      <h3>Entities</h3>
+      <p>The books hold two legal entities, <strong>Northbridge Trading Ltd</strong> and <strong>Northbridge Holding Ltd</strong>. Every journal, invoice, fixed asset and bank statement belongs to exactly one of them. They share the chart of accounts, cost centres, customers, suppliers and periods, but bank accounts (and Holding's investment in its subsidiary) belong to one entity and can only be posted to by that entity. The selector in the top bar shows one entity or all of them; "All entities" simply adds both sets of books together - intercompany balances, the management fee Holding charges Trading and Holding's investment in Trading are <em>not</em> eliminated, so it is not a consolidation.</p>
+
+      <h3>Editing postings</h3>
+      <p>Posted journals can be changed as long as their period is open. Manual and opening journals can be changed completely (date, reference, description, lines and amounts) and must still balance. Journals created by an invoice, payment, bank line, asset purchase or the depreciation run follow that document: their amounts and dates can't change, but the description can, and P&amp;L lines can be moved to another P&amp;L account and/or cost centre (a reclassification); an invoice line moves along with its ledger line. Every change is kept in the journal's history with a before and after copy.</p>
+
       <h3>Cost centres</h3>
       <p>Cost centres (departments) can be chosen on P&amp;L lines only: invoice lines, manual journal lines, bank postings to a P&amp;L account, and depreciation (taken from the asset). Balance sheet lines never carry one. Automatic FX gains/losses have no cost centre and show as "Unallocated". The Financials tab can show the P&amp;L for one cost centre, and has a P&amp;L per cost centre.</p>
 
@@ -393,6 +439,7 @@
 <dialog id="dialog-invoice" class="wide">
   <form id="form-invoice" class="form">
     <h2 id="invoice-dialog-title">New invoice</h2>
+    <label>Entity <select name="entity_id" required class="entity-field"></select></label>
     <div class="row">
       <label><span id="invoice-party-label">Party</span>
         <select name="party_id" required id="invoice-party-select"></select>
@@ -493,7 +540,8 @@
 <!-- Manual journal -->
 <dialog id="dialog-journal" class="wide">
   <form id="form-journal" class="form">
-    <h2>New journal entry</h2>
+    <h2 id="journal-dialog-title">New journal entry</h2>
+    <label>Entity <select name="entity_id" required class="entity-field"></select></label>
     <div class="row">
       <label>Date <input name="journal_date" type="date" required /></label>
       <label>Reference <input name="reference" maxlength="40" /></label>
@@ -543,10 +591,31 @@
   </form>
 </dialog>
 
+<!-- Reclassify a journal that follows a source document -->
+<dialog id="dialog-reclass" class="wide">
+  <form id="form-reclass" class="form">
+    <h2 id="reclass-title">Edit journal</h2>
+    <p class="hint" id="reclass-hint"></p>
+    <label>Description <input name="description" required maxlength="200" /></label>
+    <div class="table-wrap">
+      <table class="table lines-table" id="reclass-lines">
+        <thead><tr><th>Ledger account</th><th>Cost centre</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="error" id="reclass-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save changes</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Fixed asset -->
 <dialog id="dialog-asset">
   <form id="form-asset" class="form">
     <h2>New fixed asset</h2>
+    <label>Entity <select name="entity_id" required class="entity-field"></select></label>
     <label>Name <input name="name" required maxlength="80" /></label>
     <label>Description <input name="description" maxlength="200" /></label>
     <div class="row">
