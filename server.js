@@ -7,10 +7,12 @@ const path = require('path');
 const acct = require('./accounting');
 const fx = require('./fx');
 const bank = require('./bank');
+const assets = require('./assets');
 const { seedIfEmpty } = require('./seed');
 
 seedIfEmpty();
 fx.startScheduler();
+assets.startScheduler();
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -81,8 +83,37 @@ const routes = [
   {
     method: 'GET',
     pattern: /^\/api\/meta$/,
-    handler: async () => ({ company: acct.getCompany(), currencies: acct.CURRENCIES, categories: acct.CATEGORIES }),
+    handler: async () => ({
+      company: acct.getCompany(),
+      currencies: acct.CURRENCIES,
+      categories: acct.CATEGORIES,
+      asset_types: Object.entries(assets.ASSET_TYPES).map(([key, t]) => ({ key, name: t.name })),
+    }),
   },
+
+  // Cost centres
+  { method: 'GET', pattern: /^\/api\/cost-centers$/, handler: async () => acct.listCostCenters() },
+  { method: 'POST', pattern: /^\/api\/cost-centers$/, handler: json((body) => acct.createCostCenter(body)) },
+  { method: 'PUT', pattern: /^\/api\/cost-centers\/([^/]+)$/, handler: json((body, m) => acct.updateCostCenter(m[1], body)) },
+
+  // Periods
+  { method: 'GET', pattern: /^\/api\/periods$/, handler: async () => acct.listPeriods() },
+  { method: 'POST', pattern: /^\/api\/periods\/(\d{4}-\d{2})\/close$/, handler: async (req, m) => assets.closePeriod(m[1]) },
+  { method: 'POST', pattern: /^\/api\/periods\/(\d{4}-\d{2})\/reopen$/, handler: async (req, m) => acct.setPeriodStatus(m[1], 'open') },
+
+  // Fixed assets
+  { method: 'GET', pattern: /^\/api\/assets$/, handler: async () => ({ assets: assets.listAssets(), depreciation: assets.getStatus() }) },
+  { method: 'POST', pattern: /^\/api\/assets$/, handler: json((body) => assets.createAsset(body)) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/assets\/(\d+)$/,
+    handler: async (req, m) => {
+      const a = assets.getAsset(Number(m[1]));
+      if (!a) throw acct.httpError(404, 'Asset not found');
+      return a;
+    },
+  },
+  { method: 'POST', pattern: /^\/api\/assets\/depreciation$/, handler: json((body) => assets.runDepreciation(body.period)) },
 
   // Chart of accounts
   { method: 'GET', pattern: /^\/api\/accounts$/, handler: async () => acct.listAccounts() },
@@ -92,8 +123,10 @@ const routes = [
   // Customers & suppliers
   { method: 'GET', pattern: /^\/api\/suppliers$/, handler: async () => acct.listParties('supplier') },
   { method: 'POST', pattern: /^\/api\/suppliers$/, handler: json((body) => acct.createParty('supplier', body)) },
+  { method: 'PUT', pattern: /^\/api\/suppliers\/(\d+)$/, handler: json((body, m) => acct.updateParty('supplier', Number(m[1]), body)) },
   { method: 'GET', pattern: /^\/api\/customers$/, handler: async () => acct.listParties('customer') },
   { method: 'POST', pattern: /^\/api\/customers$/, handler: json((body) => acct.createParty('customer', body)) },
+  { method: 'PUT', pattern: /^\/api\/customers\/(\d+)$/, handler: json((body, m) => acct.updateParty('customer', Number(m[1]), body)) },
 
   // Purchase & sales invoices
   { method: 'GET', pattern: /^\/api\/invoices$/, handler: async (req, m, q) => acct.listInvoices(q.get('type') || undefined) },
@@ -131,8 +164,14 @@ const routes = [
   {
     method: 'GET',
     pattern: /^\/api\/reports$/,
-    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to') }),
+    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to'), cost_center: q.get('cost_center') || null }),
   },
+  {
+    method: 'GET',
+    pattern: /^\/api\/reports\/cost-centers$/,
+    handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to') }),
+  },
+  { method: 'GET', pattern: /^\/api\/kpis$/, handler: async (req, m, q) => acct.kpis({ from: q.get('from'), to: q.get('to') }) },
 
   // Exchange rates (ECB)
   {

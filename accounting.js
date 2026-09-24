@@ -14,6 +14,8 @@ const CURRENCIES = ['GBP', 'EUR', 'USD'];
  */
 const CATEGORIES = [
   { key: 'fixed_assets', name: 'Fixed assets', statement: 'BS', side: 'asset', cashflow: 'investing' },
+  // Contra-asset: shown (negative) under assets; its movement is depreciation, a non-cash item.
+  { key: 'accumulated_depreciation', name: 'Accumulated depreciation', statement: 'BS', side: 'asset', cashflow: 'operating', cf_label: 'Add back: depreciation (non-cash)' },
   { key: 'receivables', name: 'Trade receivables', statement: 'BS', side: 'asset', cashflow: 'operating' },
   { key: 'other_current_assets', name: 'Other current assets', statement: 'BS', side: 'asset', cashflow: 'operating' },
   { key: 'cash', name: 'Cash & bank', statement: 'BS', side: 'asset', cashflow: 'cash' },
@@ -23,6 +25,7 @@ const CATEGORIES = [
   { key: 'revenue', name: 'Revenue', statement: 'PL', side: 'income', cashflow: null },
   { key: 'cost_of_sales', name: 'Cost of sales', statement: 'PL', side: 'expense', cashflow: null },
   { key: 'overheads', name: 'Overheads', statement: 'PL', side: 'expense', cashflow: null },
+  { key: 'depreciation', name: 'Depreciation', statement: 'PL', side: 'expense', cashflow: null },
   { key: 'financial_income', name: 'Financial income', statement: 'PL', side: 'income', cashflow: null },
   { key: 'financial_expenses', name: 'Financial expenses', statement: 'PL', side: 'expense', cashflow: null },
 ];
@@ -37,6 +40,12 @@ const ROLES = {
   VAT_OUT: 'vat_payable',
   FX_GAIN: 'fx_gain',
   FX_LOSS: 'fx_loss',
+  MACHINERY_COST: 'machinery_cost',
+  MACHINERY_ACCUM: 'machinery_accumulated_depreciation',
+  MACHINERY_DEPR: 'machinery_depreciation',
+  INVENTORY_COST: 'inventory_cost',
+  INVENTORY_ACCUM: 'inventory_accumulated_depreciation',
+  INVENTORY_DEPR: 'inventory_depreciation',
 };
 
 function httpError(status, message) {
@@ -145,13 +154,145 @@ function getParty(kind, id) {
   return db.prepare(`SELECT * FROM ${PARTY_TABLE[kind]} WHERE id = ?`).get(id);
 }
 
-function createParty(kind, { name, country, currency, vat_number }) {
+const clean = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+
+function partyFields({ name, country, currency, vat_number, sort_code, account_number, iban, bic }) {
   if (!name || !String(name).trim()) throw httpError(400, 'Name is required');
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
+  const sortDigits = clean(sort_code) ? clean(sort_code).replace(/[^0-9]/g, '') : null;
+  if (sortDigits && sortDigits.length !== 6) throw httpError(400, 'A UK sort code has 6 digits');
+  const accNo = clean(account_number) ? clean(account_number).replace(/\s+/g, '') : null;
+  if (accNo && !/^\d{8}$/.test(accNo)) throw httpError(400, 'A UK account number has 8 digits');
+  return [
+    String(name).trim(),
+    clean(country),
+    currency,
+    clean(vat_number),
+    sortDigits ? sortDigits.replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3') : null,
+    accNo,
+    clean(iban) ? clean(iban).replace(/\s+/g, '').toUpperCase() : null,
+    clean(bic) ? clean(bic).toUpperCase() : null,
+  ];
+}
+
+function createParty(kind, data) {
   const info = db
-    .prepare(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number) VALUES (?, ?, ?, ?)`)
-    .run(String(name).trim(), country || null, currency, vat_number || null);
+    .prepare(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number, sort_code, account_number, iban, bic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(...partyFields(data));
   return getParty(kind, Number(info.lastInsertRowid));
+}
+
+function updateParty(kind, id, data) {
+  if (!getParty(kind, id)) throw httpError(404, `${kind} not found`);
+  db.prepare(
+    `UPDATE ${PARTY_TABLE[kind]} SET name = ?, country = ?, currency = ?, vat_number = ?, sort_code = ?, account_number = ?, iban = ?, bic = ? WHERE id = ?`
+  ).run(...partyFields(data), id);
+  return getParty(kind, id);
+}
+
+// ---------- Cost centres ----------
+
+function listCostCenters() {
+  return db.prepare('SELECT * FROM cost_centers ORDER BY code').all();
+}
+
+function createCostCenter({ code, name }) {
+  code = String(code || '').trim();
+  name = String(name || '').trim();
+  if (!/^[0-9A-Za-z-]{1,10}$/.test(code)) throw httpError(400, 'Cost centre code must be 1-10 letters/digits');
+  if (!name) throw httpError(400, 'Cost centre name is required');
+  if (db.prepare('SELECT 1 FROM cost_centers WHERE code = ?').get(code)) throw httpError(400, `Cost centre ${code} already exists`);
+  db.prepare('INSERT INTO cost_centers (code, name) VALUES (?, ?)').run(code, name);
+  return db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+}
+
+function updateCostCenter(code, { name, active }) {
+  const cc = db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+  if (!cc) throw httpError(404, 'Cost centre not found');
+  if (name !== undefined && !String(name).trim()) throw httpError(400, 'Cost centre name is required');
+  db.prepare('UPDATE cost_centers SET name = ?, active = ? WHERE code = ?').run(
+    name !== undefined ? String(name).trim() : cc.name,
+    active !== undefined ? (active ? 1 : 0) : cc.active,
+    code
+  );
+  return db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+}
+
+/**
+ * Cost centres only apply to P&L accounts; on a balance sheet account the
+ * value is dropped. An unknown or inactive code is an error.
+ */
+function resolveCostCenter(account, code) {
+  if (!code || CATEGORY_BY_KEY[account.category].statement !== 'PL') return null;
+  const cc = db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+  if (!cc) throw httpError(400, `Unknown cost centre ${code}`);
+  if (!cc.active) throw httpError(400, `Cost centre ${code} ${cc.name} is inactive`);
+  return cc.code;
+}
+
+// ---------- Periods ----------
+
+const periodOf = (date) => String(date).slice(0, 7);
+
+function periodBounds(period) {
+  const [y, m] = period.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { start_date: `${period}-01`, end_date: `${period}-${String(last).padStart(2, '0')}` };
+}
+
+function nextPeriod(period) {
+  const [y, m] = period.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+}
+
+function ensurePeriod(period) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw httpError(400, `Invalid period ${period}`);
+  const existing = db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+  if (existing) return existing;
+  const { start_date, end_date } = periodBounds(period);
+  db.prepare('INSERT INTO periods (period, start_date, end_date) VALUES (?, ?, ?)').run(period, start_date, end_date);
+  return db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+}
+
+/** Make sure every month from `from` to `to` (inclusive) exists as a period. */
+function ensurePeriods(from, to) {
+  for (let p = from; p <= to; p = nextPeriod(p)) ensurePeriod(p);
+}
+
+function listPeriods() {
+  return db
+    .prepare(
+      `SELECT p.*,
+         (SELECT COUNT(*) FROM journals j WHERE j.period = p.period) AS journal_count,
+         (SELECT COALESCE(SUM(amount), 0) FROM asset_depreciation d WHERE d.period = p.period) AS depreciation
+       FROM periods p ORDER BY p.period DESC`
+    )
+    .all()
+    .map((p) => ({ ...p, depreciation: round2(p.depreciation) }));
+}
+
+function setPeriodStatus(period, status) {
+  const p = db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+  if (!p) throw httpError(404, 'Period not found');
+  if (status === 'closed') {
+    // Close in order, so nothing can still be posted "behind" a closed month.
+    const earlierOpen = db
+      .prepare("SELECT period FROM periods WHERE period < ? AND status = 'open' AND period IN (SELECT DISTINCT period FROM journals) ORDER BY period LIMIT 1")
+      .get(period);
+    if (earlierOpen) throw httpError(400, `Close ${earlierOpen.period} first`);
+    db.prepare("UPDATE periods SET status = 'closed', closed_at = datetime('now') WHERE period = ?").run(period);
+  } else {
+    const laterClosed = db.prepare("SELECT period FROM periods WHERE period > ? AND status = 'closed' ORDER BY period DESC LIMIT 1").get(period);
+    if (laterClosed) throw httpError(400, `Reopen ${laterClosed.period} first`);
+    db.prepare("UPDATE periods SET status = 'open', closed_at = NULL WHERE period = ?").run(period);
+  }
+  return db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+}
+
+function assertPeriodOpen(date) {
+  const p = ensurePeriod(periodOf(date));
+  if (p.status === 'closed') throw httpError(400, `Period ${p.period} is closed - reopen it in Setup to post on ${date}`);
+  return p.period;
 }
 
 // ---------- Journals ----------
@@ -161,29 +302,31 @@ function createParty(kind, { name, country, currency, vat_number }) {
  * Throws (and so rolls back the surrounding transaction) if it doesn't balance.
  */
 function postJournal({ journal_date, reference, description, source_type, source_id, lines }) {
-  if (!journal_date) throw httpError(400, 'Journal date is required');
-  const clean = lines
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(journal_date || '')) throw httpError(400, 'Journal date is required');
+  const period = assertPeriodOpen(journal_date);
+  const posted = lines
     .map((l) => ({ ...l, debit: round2(l.debit || 0), credit: round2(l.credit || 0) }))
     .filter((l) => l.debit !== 0 || l.credit !== 0);
-  if (clean.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
-  for (const l of clean) {
-    requireAccount(l.account_code);
+  if (posted.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
+  for (const l of posted) {
+    const account = requireAccount(l.account_code);
+    l.cost_center = resolveCostCenter(account, l.cost_center);
     if (l.debit < 0 || l.credit < 0) throw httpError(400, 'Debit and credit amounts cannot be negative');
   }
-  const dr = round2(clean.reduce((s, l) => s + l.debit, 0));
-  const cr = round2(clean.reduce((s, l) => s + l.credit, 0));
+  const dr = round2(posted.reduce((s, l) => s + l.debit, 0));
+  const cr = round2(posted.reduce((s, l) => s + l.credit, 0));
   if (Math.abs(dr - cr) > 0.001) throw httpError(400, `Journal does not balance: debits ${dr.toFixed(2)} vs credits ${cr.toFixed(2)}`);
 
   const info = db
-    .prepare('INSERT INTO journals (journal_date, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?)')
-    .run(journal_date, reference || null, description, source_type, source_id ?? null);
+    .prepare('INSERT INTO journals (journal_date, period, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(journal_date, period, reference || null, description, source_type, source_id ?? null);
   const journalId = Number(info.lastInsertRowid);
   const insert = db.prepare(
-    `INSERT INTO ledger_entries (journal_id, entry_date, account_code, debit, credit, currency, fx_note, description)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO ledger_entries (journal_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  for (const l of clean) {
-    insert.run(journalId, journal_date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description);
+  for (const l of posted) {
+    insert.run(journalId, journal_date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center);
   }
   return journalId;
 }
@@ -205,6 +348,7 @@ function createManualJournal({ journal_date, reference, description, currency, e
   const parsed = lines.map((l) => ({
     account_code: l.account_code,
     description: l.description ? String(l.description).trim() : null,
+    cost_center: l.cost_center || null,
     debit: round2(Number(l.debit) || 0),
     credit: round2(Number(l.credit) || 0),
   }));
@@ -330,6 +474,7 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
     return {
       description: l.description ? String(l.description).trim() : null,
       account_code: acc.code,
+      cost_center: resolveCostCenter(acc, l.cost_center),
       net_amount: net,
       vat_rate: vatRate,
       vat_amount: round2((net * vatRate) / 100),
@@ -354,10 +499,10 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
       .run(type, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null);
     const invoiceId = Number(info.lastInsertRowid);
     const insertLine = db.prepare(
-      `INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const l of parsed) insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net);
+    for (const l of parsed) insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center);
 
     const isPurchase = type === 'purchase';
     const foreign = currency !== company.base_currency;
@@ -365,6 +510,7 @@ function createInvoice({ type, party_id, invoice_number, invoice_date, currency,
     const desc = `${isPurchase ? 'Purchase' : 'Sales'} invoice ${invoice_number} - ${party.name}`;
     const journalLines = parsed.map((l) => ({
       account_code: l.account_code,
+      cost_center: l.cost_center,
       [isPurchase ? 'debit' : 'credit']: l.base_net,
       currency,
       fx_note: note(l.net_amount),
@@ -545,25 +691,53 @@ function dayBefore(date) {
   return d.toISOString().slice(0, 10);
 }
 
+// The opening-balance journal is always "brought forward": part of the opening
+// position of any period it falls in, never a movement within it (otherwise the
+// assets and capital taken over would show up as investments and financing).
+// Both expect the parameters (from, to).
+const OPENING_SQL = "(l.entry_date < ? OR (j.source_type = 'opening' AND l.entry_date <= ?))";
+const MOVEMENT_SQL = "(l.entry_date >= ? AND l.entry_date <= ? AND j.source_type <> 'opening')";
+
+function checkRange(from, to) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) throw httpError(400, 'from and to must be dates (YYYY-MM-DD)');
+  if (from > to) throw httpError(400, '"From" date must be before "to" date');
+}
+
+// SQL condition + parameter for a cost centre filter; 'none' means lines without one.
+function costCenterFilter(costCenter) {
+  if (!costCenter) return { sql: '', params: [] };
+  if (costCenter === 'none') return { sql: ' AND l.cost_center IS NULL', params: [] };
+  return { sql: ' AND l.cost_center = ?', params: [costCenter] };
+}
+
+/** P&L subtotals from category totals (natural sign: income and expenses both positive). */
+function plTotals(t) {
+  const gross_profit = round2(t.revenue - t.cost_of_sales);
+  const ebitda = round2(gross_profit - t.overheads);
+  const operating_result = round2(ebitda - t.depreciation);
+  const net_result = round2(operating_result + t.financial_income - t.financial_expenses);
+  return { gross_profit, ebitda, operating_result, net_result };
+}
+
 /**
  * Balance sheet (opening and closing), P&L for the period and an
  * indirect-method cash flow statement, all grouped by account category.
  * Amounts are shown with their natural sign (assets/expenses as debits,
- * liabilities/equity/income as credits).
+ * liabilities/equity/income as credits). A cost centre filter narrows the
+ * P&L only; the balance sheet and cash flow always cover the whole company.
  */
-function financialStatements({ from, to }) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) throw httpError(400, 'from and to must be dates (YYYY-MM-DD)');
-  if (from > to) throw httpError(400, '"From" date must be before "to" date');
+function financialStatements({ from, to, cost_center }) {
+  checkRange(from, to);
 
   const rows = db
     .prepare(
       `SELECT a.code, a.name, a.category,
-         COALESCE(SUM(CASE WHEN l.entry_date < ? THEN l.debit - l.credit END), 0) AS opening,
-         COALESCE(SUM(CASE WHEN l.entry_date >= ? AND l.entry_date <= ? THEN l.debit - l.credit END), 0) AS movement
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code
+         COALESCE(SUM(CASE WHEN ${OPENING_SQL} THEN l.debit - l.credit END), 0) AS opening,
+         COALESCE(SUM(CASE WHEN ${MOVEMENT_SQL} THEN l.debit - l.credit END), 0) AS movement
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code LEFT JOIN journals j ON j.id = l.journal_id
        GROUP BY a.code ORDER BY a.code`
     )
-    .all(from, from, to)
+    .all(from, to, from, to)
     .map((r) => ({ ...r, opening: round2(r.opening), movement: round2(r.movement), closing: round2(r.opening + r.movement) }));
 
   const signFor = (cat) => (cat.side === 'asset' || cat.side === 'expense' ? 1 : -1);
@@ -577,12 +751,28 @@ function financialStatements({ from, to }) {
   };
   const cats = (pred) => CATEGORIES.filter(pred);
 
-  // P&L for the period
+  // P&L for the period (optionally for one cost centre)
+  const plCats = cats((c) => c.statement === 'PL');
   const pl = {};
-  for (const cat of cats((c) => c.statement === 'PL')) pl[cat.key] = group(cat, (r) => r.movement);
-  const gross_profit = round2(pl.revenue.total - pl.cost_of_sales.total);
-  const operating_result = round2(gross_profit - pl.overheads.total);
-  const net_result = round2(operating_result + pl.financial_income.total - pl.financial_expenses.total);
+  let plMovement = (r) => r.movement;
+  if (cost_center) {
+    const f = costCenterFilter(cost_center);
+    const filtered = Object.fromEntries(
+      db
+        .prepare(
+          `SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
+           WHERE l.entry_date >= ? AND l.entry_date <= ?${f.sql} GROUP BY l.account_code`
+        )
+        .all(from, to, ...f.params)
+        .map((r) => [r.code, round2(r.movement)])
+    );
+    plMovement = (r) => filtered[r.code] || 0;
+  }
+  for (const cat of plCats) pl[cat.key] = group(cat, plMovement);
+  const totals = plTotals(Object.fromEntries(plCats.map((c) => [c.key, pl[c.key].total])));
+  // The cash flow needs the whole-company result, whatever the P&L filter.
+  const companyPl = Object.fromEntries(plCats.map((c) => [c.key, group(c, (r) => r.movement).total]));
+  const net_result = plTotals(companyPl).net_result;
 
   // Balance sheet at the start and end of the period. P&L accounts are not
   // closed off to retained earnings, so the cumulative result is shown as
@@ -607,7 +797,7 @@ function financialStatements({ from, to }) {
       .filter((r) => r.category === cat.key)
       .map((r) => ({ code: r.code, name: r.name, amount: round2(-r.movement) }))
       .filter((a) => a.amount !== 0);
-    return { key: cat.key, name: `Change in ${cat.name.toLowerCase()}`, accounts, total: round2(accounts.reduce((t, a) => t + a.amount, 0)) };
+    return { key: cat.key, name: cat.cf_label || `Change in ${cat.name.toLowerCase()}`, accounts, total: round2(accounts.reduce((t, a) => t + a.amount, 0)) };
   };
   const operatingItems = cats((c) => c.cashflow === 'operating').map(cfGroup);
   const operating = round2(net_result + operatingItems.reduce((t, g) => t + g.total, 0));
@@ -624,11 +814,10 @@ function financialStatements({ from, to }) {
     from,
     to,
     opening_date: dayBefore(from),
+    cost_center: cost_center || null,
     profit_and_loss: {
       ...pl,
-      gross_profit,
-      operating_result,
-      net_result,
+      ...totals,
     },
     balance_sheet: {
       opening: balanceSheet((r) => r.opening),
@@ -648,6 +837,132 @@ function financialStatements({ from, to }) {
       cash_accounts: cashRows.map((r) => ({ code: r.code, name: r.name, opening: r.opening, closing: r.closing })),
       reconciles: Math.abs(opening_cash + net_change - closing_cash) < 0.01,
     },
+  };
+}
+
+/**
+ * P&L per cost centre for a period: one column per cost centre (plus
+ * "unallocated"), one row per P&L category, with the subtotals.
+ */
+function costCenterReport({ from, to }) {
+  checkRange(from, to);
+  const rows = db
+    .prepare(
+      `SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
+       FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
+       WHERE l.entry_date >= ? AND l.entry_date <= ?
+       GROUP BY cc, a.category`
+    )
+    .all(from, to);
+  const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
+  const columns = [...listCostCenters().map((c) => ({ code: c.code, name: c.name })), { code: '', name: 'Unallocated' }];
+  const byCc = {};
+  for (const col of columns) byCc[col.code] = Object.fromEntries(plCats.map((c) => [c.key, 0]));
+  for (const r of rows) {
+    const cat = CATEGORY_BY_KEY[r.category];
+    if (!cat || cat.statement !== 'PL' || !byCc[r.cc]) continue;
+    byCc[r.cc][cat.key] = round2(byCc[r.cc][cat.key] + (cat.side === 'expense' ? r.movement : -r.movement));
+  }
+  const result = columns.map((col) => ({ ...col, ...byCc[col.code], ...plTotals(byCc[col.code]) }));
+  // Hide cost centres (and "unallocated") with nothing on them in the period.
+  const used = result.filter((c) => plCats.some((cat) => c[cat.key] !== 0));
+  return { from, to, categories: plCats.map((c) => ({ key: c.key, name: c.name })), cost_centers: used };
+}
+
+function daysBetween(from, to) {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
+}
+
+const ratio = (a, b) => (b ? Math.round((a / b) * 10000) / 10000 : null);
+
+/**
+ * Financial KPIs for a period: profitability, liquidity, solvency and
+ * working capital, plus a monthly trend and costs per cost centre.
+ */
+function kpis({ from, to }) {
+  const fs = financialStatements({ from, to });
+  const pl = fs.profit_and_loss;
+  const bs = fs.balance_sheet.closing;
+  const cat = (list, key) => (list.find((g) => g.key === key) || { total: 0 }).total;
+  const cash = cat(bs.assets, 'cash');
+  const receivables = cat(bs.assets, 'receivables');
+  const current_assets = round2(receivables + cat(bs.assets, 'other_current_assets') + cash);
+  const current_liabilities = round2(bs.liabilities.reduce((t, g) => t + g.total, 0));
+  const payables = cat(bs.liabilities, 'payables');
+  const equity = bs.equity.total;
+  const days = daysBetween(from, to);
+
+  // Invoiced amounts (incl. VAT, in GBP) for the period, to compare with AR/AP balances.
+  const invoiced = (type) =>
+    db.prepare('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ?').get(type, from, to).t;
+  const salesInvoiced = invoiced('sale');
+  const purchasesInvoiced = invoiced('purchase');
+
+  // Monthly trend
+  const monthRows = db
+    .prepare(
+      `SELECT substr(l.entry_date, 1, 7) AS period, a.category, SUM(l.debit - l.credit) AS movement
+       FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
+       WHERE ${MOVEMENT_SQL}
+       GROUP BY period, a.category`
+    )
+    .all(from, to);
+  const cashBefore = db
+    .prepare(
+      `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
+       WHERE a.category = 'cash' AND ${OPENING_SQL}`
+    )
+    .get(from, to).t;
+  const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
+  const months = [];
+  let runningCash = cashBefore;
+  for (let p = periodOf(from); p <= periodOf(to); p = nextPeriod(p)) {
+    const t = Object.fromEntries(plCats.map((c) => [c.key, 0]));
+    let cashMove = 0;
+    for (const r of monthRows.filter((m) => m.period === p)) {
+      const c = CATEGORY_BY_KEY[r.category];
+      if (c.key === 'cash') cashMove += r.movement;
+      else if (c.statement === 'PL') t[c.key] = round2(t[c.key] + (c.side === 'expense' ? r.movement : -r.movement));
+    }
+    runningCash = round2(runningCash + cashMove);
+    months.push({ period: p, revenue: t.revenue, costs: round2(t.cost_of_sales + t.overheads + t.depreciation), ...plTotals(t), cash: runningCash });
+  }
+
+  // Operating costs (cost of sales, overheads, depreciation) per cost centre
+  const ccReport = costCenterReport({ from, to });
+  const cost_by_cost_center = ccReport.cost_centers
+    .map((c) => ({ code: c.code, name: c.name, costs: round2(c.cost_of_sales + c.overheads + c.depreciation) }))
+    .filter((c) => c.costs !== 0)
+    .sort((a, b) => b.costs - a.costs);
+
+  return {
+    from,
+    to,
+    days,
+    revenue: pl.revenue.total,
+    gross_profit: pl.gross_profit,
+    ebitda: pl.ebitda,
+    operating_result: pl.operating_result,
+    net_result: pl.net_result,
+    depreciation: pl.depreciation.total,
+    fx_result: round2(
+      (pl.financial_income.accounts.find((a) => a.code === accountByRole(ROLES.FX_GAIN).code)?.amount || 0) -
+        (pl.financial_expenses.accounts.find((a) => a.code === accountByRole(ROLES.FX_LOSS).code)?.amount || 0)
+    ),
+    gross_margin: ratio(pl.gross_profit, pl.revenue.total),
+    ebitda_margin: ratio(pl.ebitda, pl.revenue.total),
+    net_margin: ratio(pl.net_result, pl.revenue.total),
+    overhead_ratio: ratio(pl.overheads.total, pl.revenue.total),
+    cash,
+    working_capital: round2(current_assets - current_liabilities),
+    current_ratio: ratio(current_assets, current_liabilities),
+    quick_ratio: ratio(round2(cash + receivables), current_liabilities),
+    solvency: ratio(equity, bs.total_assets),
+    return_on_equity: ratio(pl.net_result, equity),
+    dso: salesInvoiced ? Math.round((receivables / salesInvoiced) * days) : null,
+    dpo: purchasesInvoiced ? Math.round((payables / purchasesInvoiced) * days) : null,
+    months,
+    cost_by_cost_center,
   };
 }
 
@@ -699,6 +1014,18 @@ module.exports = {
   listParties,
   getParty,
   createParty,
+  updateParty,
+  listCostCenters,
+  createCostCenter,
+  updateCostCenter,
+  periodOf,
+  periodBounds,
+  nextPeriod,
+  ensurePeriod,
+  ensurePeriods,
+  listPeriods,
+  setPeriodStatus,
+  accountByRole,
   postJournal,
   createManualJournal,
   getJournal,
@@ -711,5 +1038,7 @@ module.exports = {
   invoiceDetail,
   createPayment,
   financialStatements,
+  costCenterReport,
+  kpis,
   dashboardSummary,
 };

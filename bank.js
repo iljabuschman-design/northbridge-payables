@@ -196,7 +196,7 @@ function getStatement(id) {
  *  - mode "invoice": as a payment/receipt of an open invoice, which also
  *    settles the invoice and books any FX difference.
  */
-async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount, description }) {
+async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount, description, cost_center }) {
   const line = db.prepare('SELECT * FROM bank_statement_lines WHERE id = ?').get(lineId);
   if (!line) throw httpError(404, 'Statement line not found');
   if (line.journal_id) throw httpError(400, 'This line has already been posted');
@@ -244,7 +244,7 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
         source_id: line.id,
         lines: [
           { account_code: bank.code, [moneyIn ? 'debit' : 'credit']: base, currency: bank.bank_currency, fx_note: fxNote, description: desc },
-          { account_code: contra.code, [moneyIn ? 'credit' : 'debit']: base, currency: bank.bank_currency, fx_note: fxNote, description: desc },
+          { account_code: contra.code, [moneyIn ? 'credit' : 'debit']: base, currency: bank.bank_currency, fx_note: fxNote, description: desc, cost_center },
         ],
       });
     } else {

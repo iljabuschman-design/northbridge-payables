@@ -12,7 +12,7 @@ db.exec('PRAGMA journal_mode = WAL;');
 
 // Bump this whenever the schema changes incompatibly. An older database is
 // dropped and rebuilt (then reseeded with demo data on startup).
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
@@ -34,12 +34,17 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Bank details are used by the "Pay" screen for purchase invoices.
 CREATE TABLE IF NOT EXISTS suppliers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   country TEXT,
   currency TEXT NOT NULL,
   vat_number TEXT,
+  sort_code TEXT,
+  account_number TEXT,
+  iban TEXT,
+  bic TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -49,7 +54,27 @@ CREATE TABLE IF NOT EXISTS customers (
   country TEXT,
   currency TEXT NOT NULL,
   vat_number TEXT,
+  sort_code TEXT,
+  account_number TEXT,
+  iban TEXT,
+  bic TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Departments. P&L lines can carry a cost centre to split results by department.
+CREATE TABLE IF NOT EXISTS cost_centers (
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
+
+-- Monthly accounting periods ('YYYY-MM'). Nothing can be posted into a closed period.
+CREATE TABLE IF NOT EXISTS periods (
+  period TEXT PRIMARY KEY,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+  closed_at TEXT
 );
 
 -- Purchase and sales invoices share one table; party_id points at
@@ -80,7 +105,8 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   net_amount REAL NOT NULL,
   vat_rate REAL NOT NULL,
   vat_amount REAL NOT NULL,
-  base_net REAL NOT NULL
+  base_net REAL NOT NULL,
+  cost_center TEXT REFERENCES cost_centers(code)
 );
 
 -- A payment (purchase invoice) or receipt (sales invoice). "amount" is the
@@ -105,6 +131,7 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE TABLE IF NOT EXISTS journals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   journal_date TEXT NOT NULL,
+  period TEXT NOT NULL REFERENCES periods(period),
   reference TEXT,
   description TEXT NOT NULL,
   source_type TEXT NOT NULL,
@@ -121,7 +148,8 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   credit REAL NOT NULL DEFAULT 0,
   currency TEXT,
   fx_note TEXT,
-  description TEXT NOT NULL
+  description TEXT NOT NULL,
+  cost_center TEXT REFERENCES cost_centers(code)
 );
 
 -- Daily ECB reference rates, stored as "1 unit of currency = rate_to_base GBP".
@@ -156,7 +184,37 @@ CREATE TABLE IF NOT EXISTS bank_statement_lines (
   remittance TEXT,
   reference TEXT,
   journal_id INTEGER REFERENCES journals(id),
-  payment_id INTEGER REFERENCES payments(id)
+  payment_id INTEGER REFERENCES payments(id),
+  auto_settled INTEGER NOT NULL DEFAULT 0
+);
+
+-- Fixed asset register. asset_type decides which investment / accumulated
+-- depreciation / depreciation ledgers are used (see ASSET_TYPES in assets.js).
+-- opening_depreciation is depreciation booked before these books started;
+-- depreciation_start is the first period depreciated by this system.
+CREATE TABLE IF NOT EXISTS fixed_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_number TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT,
+  asset_type TEXT NOT NULL,
+  cost_center TEXT REFERENCES cost_centers(code),
+  acquisition_date TEXT NOT NULL,
+  acquisition_cost REAL NOT NULL,
+  depreciation_rate REAL NOT NULL,
+  opening_depreciation REAL NOT NULL DEFAULT 0,
+  depreciation_start TEXT NOT NULL,
+  acquisition_journal_id INTEGER REFERENCES journals(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS asset_depreciation (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL REFERENCES fixed_assets(id),
+  period TEXT NOT NULL REFERENCES periods(period),
+  amount REAL NOT NULL,
+  journal_id INTEGER NOT NULL REFERENCES journals(id),
+  UNIQUE (asset_id, period)
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoices_party ON invoices(type, party_id);
@@ -166,6 +224,8 @@ CREATE INDEX IF NOT EXISTS idx_journals_source ON journals(source_type, source_i
 CREATE INDEX IF NOT EXISTS idx_ledger_journal ON ledger_entries(journal_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_code, entry_date);
 CREATE INDEX IF NOT EXISTS idx_bank_lines_statement ON bank_statement_lines(statement_id);
+CREATE INDEX IF NOT EXISTS idx_journals_period ON journals(period);
+CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 `;
 
 const currentVersion = db.prepare('PRAGMA user_version').get().user_version;
@@ -179,11 +239,6 @@ if (currentVersion < SCHEMA_VERSION) {
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec(SCHEMA);
 
-// Additive changes, applied in place so existing data is kept.
-const bankLineCols = db.prepare('PRAGMA table_info(bank_statement_lines)').all().map((c) => c.name);
-if (!bankLineCols.includes('auto_settled')) {
-  db.exec('ALTER TABLE bank_statement_lines ADD COLUMN auto_settled INTEGER NOT NULL DEFAULT 0');
-}
 
 function round2(n) {
   return Math.round((n + (n >= 0 ? 1e-9 : -1e-9)) * 100) / 100;

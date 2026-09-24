@@ -16,7 +16,9 @@ const ROLE_LABEL = {
   fx_gain: 'FX gains',
   fx_loss: 'FX losses',
 };
-const SOURCE_LABEL = { manual: 'Manual', invoice: 'Invoice', payment: 'Payment', bank: 'Bank', opening: 'Opening' };
+const SOURCE_LABEL = { manual: 'Manual', invoice: 'Invoice', payment: 'Payment', bank: 'Bank', opening: 'Opening', asset: 'Asset', depreciation: 'Depreciation' };
+let COST_CENTERS = [];
+let PERIODS = [];
 
 // ---------- Helpers ----------
 
@@ -63,6 +65,65 @@ function currencyOptions(selected) {
 }
 
 const bankAccounts = () => ACCOUNTS.filter((a) => a.category === 'cash' && a.bank_currency);
+
+const isPlAccount = (code) => (ACCOUNTS.find((a) => a.code === code) || {}).statement === 'PL';
+
+function ccOptions(selected) {
+  return (
+    '<option value="">-</option>' +
+    COST_CENTERS.filter((c) => c.active || c.code === selected)
+      .map((c) => `<option value="${esc(c.code)}" ${c.code === selected ? 'selected' : ''}>${esc(c.code)} ${esc(c.name)}</option>`)
+      .join('')
+  );
+}
+
+/** A cost centre select is only usable next to a P&L account. */
+function syncCcSelect(accountSelect, ccSelect) {
+  const pl = isPlAccount(accountSelect.value);
+  ccSelect.disabled = !pl;
+  if (!pl) ccSelect.value = '';
+}
+
+async function loadCostCenters() {
+  COST_CENTERS = await api('/api/cost-centers');
+}
+
+async function loadPeriods() {
+  PERIODS = await api('/api/periods');
+}
+
+const ccName = (code) => {
+  const c = COST_CENTERS.find((x) => x.code === code);
+  return c ? `${c.code} ${c.name}` : code || '';
+};
+
+const currentPeriod = () => today().slice(0, 7);
+
+/**
+ * Fill a from/to pair of period selects. Defaults: from = the first month with
+ * postings in the current year, to = the current month.
+ */
+function fillPeriodSelects(form) {
+  const periods = [...PERIODS].sort((a, b) => a.period.localeCompare(b.period));
+  const opts = (sel) => periods.map((p) => `<option value="${p.period}" ${p.period === sel ? 'selected' : ''}>${periodLabel(p.period)}</option>`).join('');
+  const year = currentPeriod().slice(0, 4);
+  const used = periods.filter((p) => p.journal_count > 0 && p.period.startsWith(year));
+  const from = form.from.value || (used[0] || periods[0] || {}).period;
+  const to = form.to.value || (periods.find((p) => p.period === currentPeriod()) ? currentPeriod() : (periods[periods.length - 1] || {}).period);
+  form.from.innerHTML = opts(from);
+  form.to.innerHTML = opts(to);
+}
+
+function periodLabel(period) {
+  const [y, m] = period.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+function periodRange(form) {
+  const from = PERIODS.find((p) => p.period === form.from.value);
+  const to = PERIODS.find((p) => p.period === form.to.value);
+  return { from: from.start_date, to: to.end_date };
+}
 
 async function loadAccounts() {
   ACCOUNTS = await api('/api/accounts');
@@ -114,6 +175,8 @@ async function autoRate(currency, date, input, hintEl) {
 
 const LOADERS = {
   dashboard: loadDashboard,
+  kpis: loadKpis,
+  assets: loadAssets,
   sales: () => loadInvoices('sale'),
   purchases: () => loadInvoices('purchase'),
   bank: loadBank,
@@ -203,7 +266,7 @@ async function loadInvoices(type) {
       <th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th>
       <th class="num">Rate</th><th class="num">Total (GBP)</th>
       <th class="num">${type === 'sale' ? 'Received' : 'Paid'}</th><th class="num">Remaining</th><th class="num">Remaining (GBP)</th>
-      <th>Status</th>
+      <th>Status</th>${type === 'purchase' ? '<th></th>' : ''}
     </tr></thead>
     <tbody>${
       invoices
@@ -215,11 +278,18 @@ async function loadInvoices(type) {
         <td class="num">${i.exchange_rate}</td><td class="num">${fmt(i.base_total, BASE)}</td>
         <td class="num">${fmt(i.paid_amount)}</td><td class="num">${fmt(i.remaining_amount)}</td><td class="num">${fmt(i.remaining_base, BASE)}</td>
         <td>${statusBadge(i.status)}</td>
+        ${type === 'purchase' ? `<td>${i.status !== 'Paid' ? `<button class="btn btn-small btn-pay" data-id="${i.id}">Pay</button>` : ''}</td>` : ''}
       </tr>`
         )
         .join('') || `<tr><td colspan="13" class="hint">No ${type === 'sale' ? 'sales' : 'purchase'} invoices yet.</td></tr>`
     }</tbody>`;
   table.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openInvoiceDetail(Number(tr.dataset.id))));
+  table.querySelectorAll('.btn-pay').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPayDialog(invoices.find((i) => i.id === Number(btn.dataset.id)));
+    })
+  );
 }
 
 async function openInvoiceDetail(id) {
@@ -242,9 +312,9 @@ async function openInvoiceDetail(id) {
 
     <div class="section-title">Lines</div>
     <div class="table-wrap"><table class="table">
-      <thead><tr><th>Description</th><th>Account</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th class="num">Net (GBP)</th></tr></thead>
+      <thead><tr><th>Description</th><th>Account</th><th>Cost centre</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th class="num">Net (GBP)</th></tr></thead>
       <tbody>${lines
-        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${esc(l.account_code)} ${esc(l.account_name)}</td><td class="num">${fmt(l.net_amount)}</td><td class="num">${l.vat_rate}</td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
+        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${esc(l.account_code)} ${esc(l.account_name)}</td><td>${esc(ccName(l.cost_center))}</td><td class="num">${fmt(l.net_amount)}</td><td class="num">${l.vat_rate}</td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
         .join('')}</tbody>
     </table></div>
 
@@ -263,10 +333,17 @@ async function openInvoiceDetail(id) {
     <div class="section-title">Journal entries</div>
     ${ledgerTable(ledger)}
 
-    ${inv.remaining_amount > 0.005 ? `<div class="dialog-actions inline"><button class="btn btn-primary" id="btn-record-payment">${isSale ? 'Record receipt' : 'Record payment'}</button></div>` : ''}
+    ${inv.remaining_amount > 0.005 ? `<div class="dialog-actions inline">${isSale ? '' : '<button class="btn" id="btn-pay-invoice">Pay via bank</button>'}<button class="btn btn-primary" id="btn-record-payment">${isSale ? 'Record receipt' : 'Record payment'}</button></div>` : ''}
   `;
   const dlg = document.getElementById('dialog-detail');
   dlg.showModal();
+  const payViaBank = document.getElementById('btn-pay-invoice');
+  if (payViaBank) {
+    payViaBank.addEventListener('click', () => {
+      dlg.close();
+      openPayDialog(inv);
+    });
+  }
   const payBtn = document.getElementById('btn-record-payment');
   if (payBtn) {
     payBtn.addEventListener('click', () => {
@@ -278,9 +355,9 @@ async function openInvoiceDetail(id) {
 
 function ledgerTable(entries) {
   return `<div class="table-wrap"><table class="table">
-    <thead><tr><th>Date</th><th>Account</th><th>FX note</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+    <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>FX note</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
     <tbody>${entries
-      .map((e) => `<tr><td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td class="muted">${esc(e.fx_note || '')}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`)
+      .map((e) => `<tr><td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td class="muted">${esc(e.fx_note || '')}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`)
       .join('')}</tbody>
   </table></div>`;
 }
@@ -298,7 +375,7 @@ const invoiceLineAccounts = (type) =>
 document.querySelectorAll('[data-new-invoice]').forEach((btn) =>
   btn.addEventListener('click', async () => {
     invoiceType = btn.dataset.newInvoice;
-    await Promise.all([loadAccounts(), loadParties()]);
+    await Promise.all([loadAccounts(), loadParties(), loadCostCenters()]);
     const parties = invoiceType === 'sale' ? CUSTOMERS : SUPPLIERS;
     invoiceForm.reset();
     document.getElementById('invoice-dialog-title').textContent = invoiceType === 'sale' ? 'New sales invoice' : 'New purchase invoice';
@@ -322,6 +399,7 @@ function addInvoiceLine() {
   tr.innerHTML = `
     <td><input class="l-desc" maxlength="120" placeholder="Description" /></td>
     <td><select class="l-account">${accountOptions(invoiceLineAccounts(invoiceType), defaultAccount)}</select></td>
+    <td><select class="l-cc">${ccOptions(invoiceType === 'sale' ? '100' : '')}</select></td>
     <td class="num"><input class="l-net num" type="number" step="0.01" min="0" required /></td>
     <td class="num"><input class="l-vat-rate num narrow" type="number" step="any" min="0" max="100" value="${vat}" /></td>
     <td class="num l-vat">0.00</td>
@@ -330,6 +408,9 @@ function addInvoiceLine() {
     if (tbody.children.length > 1) tr.remove();
     updateInvoiceTotals();
   });
+  const accSel = tr.querySelector('.l-account');
+  accSel.addEventListener('change', () => syncCcSelect(accSel, tr.querySelector('.l-cc')));
+  syncCcSelect(accSel, tr.querySelector('.l-cc'));
   tbody.appendChild(tr);
   updateInvoiceTotals();
 }
@@ -339,6 +420,7 @@ function invoiceLinesFromForm() {
   return [...document.querySelectorAll('#invoice-lines tbody tr')].map((tr) => ({
     description: tr.querySelector('.l-desc').value.trim(),
     account_code: tr.querySelector('.l-account').value,
+    cost_center: tr.querySelector('.l-cc').value || null,
     net_amount: parseFloat(tr.querySelector('.l-net').value) || 0,
     vat_rate: parseFloat(tr.querySelector('.l-vat-rate').value) || 0,
     row: tr,
@@ -600,6 +682,7 @@ document.getElementById('btn-auto-settle').addEventListener('click', async () =>
 });
 
 async function openStatement(id) {
+  if (!COST_CENTERS.length) await loadCostCenters();
   if (id !== currentStatementId) document.getElementById('statement-result').textContent = '';
   currentStatementId = id;
   document.querySelectorAll('#statements-table tr').forEach((tr) => tr.classList.toggle('selected', Number(tr.dataset.id) === id));
@@ -638,6 +721,7 @@ async function openStatement(id) {
             <option value="invoice" ${suggested ? 'selected' : ''} ${candidates.length ? '' : 'disabled'}>Open ${moneyIn ? 'sales' : 'purchase'} invoice</option>
           </select>
           <select class="p-account" ${suggested ? 'hidden' : ''}><option value="">Choose opposing account…</option>${accountOptions((a) => a.code !== st.bank_account)}</select>
+          <select class="p-cc" hidden title="Cost centre">${ccOptions('')}</select>
           <select class="p-invoice" ${suggested ? '' : 'hidden'}>${invOptions}</select>
           <label class="p-settle" hidden>Settles <input class="p-settle-amount num" type="number" step="0.01" min="0.01" /> <span class="p-settle-ccy"></span></label>
         </td>
@@ -661,10 +745,17 @@ async function openStatement(id) {
         tr.querySelector('.p-settle-ccy').textContent = opt.dataset.currency;
       }
     };
+    const ccSel = tr.querySelector('.p-cc');
+    const syncCc = () => {
+      ccSel.hidden = !(mode.value === 'account' && isPlAccount(accSel.value));
+      if (ccSel.hidden) ccSel.value = '';
+    };
+    accSel.addEventListener('change', syncCc);
     mode.addEventListener('change', () => {
       accSel.hidden = mode.value !== 'account';
       invSel.hidden = mode.value !== 'invoice';
       syncSettle();
+      syncCc();
     });
     invSel.addEventListener('change', syncSettle);
     syncSettle();
@@ -675,6 +766,7 @@ async function openStatement(id) {
         await post(`/api/bank/lines/${tr.dataset.line}/post`, {
           mode: mode.value,
           account_code: accSel.value || null,
+          cost_center: ccSel.value || null,
           invoice_id: invSel.value ? Number(invSel.value) : null,
           invoice_amount: parseFloat(tr.querySelector('.p-settle-amount').value) || null,
         });
@@ -694,7 +786,7 @@ async function loadJournals() {
   tbody.innerHTML = journals
     .map(
       (j) => `<tr class="clickable" data-id="${j.id}">
-        <td>${esc(j.journal_date)}</td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}</td>
+        <td>${esc(j.journal_date)}</td><td>${esc(j.period)}</td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}</td>
         <td><span class="badge src-${esc(j.source_type)}">${esc(SOURCE_LABEL[j.source_type] || j.source_type)}</span></td>
         <td class="num">${j.line_count}</td><td class="num">${fmt(j.total, BASE)}</td></tr>`
     )
@@ -717,7 +809,7 @@ async function openJournalDetail(id) {
 const journalForm = document.getElementById('form-journal');
 
 document.getElementById('btn-new-journal').addEventListener('click', async () => {
-  await loadAccounts();
+  await Promise.all([loadAccounts(), loadCostCenters()]);
   journalForm.reset();
   journalForm.currency.innerHTML = currencyOptions(BASE);
   journalForm.journal_date.value = today();
@@ -734,6 +826,7 @@ function addJournalLine() {
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><select class="j-account" required><option value="">Choose account…</option>${accountOptions()}</select></td>
+    <td><select class="j-cc" disabled>${ccOptions('')}</select></td>
     <td><input class="j-desc" maxlength="120" /></td>
     <td class="num"><input class="j-debit num" type="number" step="0.01" min="0" /></td>
     <td class="num"><input class="j-credit num" type="number" step="0.01" min="0" /></td>
@@ -742,6 +835,8 @@ function addJournalLine() {
     if (tbody.children.length > 2) tr.remove();
     updateJournalTotals();
   });
+  const jAcc = tr.querySelector('.j-account');
+  jAcc.addEventListener('change', () => syncCcSelect(jAcc, tr.querySelector('.j-cc')));
   // Typing a debit clears the credit on the same line and vice versa.
   tr.querySelector('.j-debit').addEventListener('input', (e) => e.target.value && (tr.querySelector('.j-credit').value = ''));
   tr.querySelector('.j-credit').addEventListener('input', (e) => e.target.value && (tr.querySelector('.j-debit').value = ''));
@@ -753,6 +848,7 @@ document.getElementById('btn-add-journal-line').addEventListener('click', addJou
 function journalLinesFromForm() {
   return [...document.querySelectorAll('#journal-lines tbody tr')].map((tr) => ({
     account_code: tr.querySelector('.j-account').value,
+    cost_center: tr.querySelector('.j-cc').value || null,
     description: tr.querySelector('.j-desc').value.trim(),
     debit: parseFloat(tr.querySelector('.j-debit').value) || 0,
     credit: parseFloat(tr.querySelector('.j-credit').value) || 0,
@@ -800,11 +896,11 @@ journalForm.addEventListener('submit', async (e) => {
 // ---------- Ledger ----------
 
 async function loadLedger() {
-  const [entries, tb] = await Promise.all([api('/api/ledger'), api('/api/trial-balance')]);
+  const [entries, tb] = await Promise.all([api('/api/ledger'), api('/api/trial-balance'), loadCostCenters()]);
   document.querySelector('#ledger-table tbody').innerHTML = entries
     .map(
       (e) => `<tr>
-        <td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td>${esc(e.description)}</td>
+        <td>${esc(e.entry_date)}</td><td>${esc(e.account_code)} ${esc(e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
         <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
     )
@@ -820,8 +916,6 @@ async function loadLedger() {
 // ---------- Financial statements ----------
 
 const periodForm = document.getElementById('form-period');
-periodForm.from.value = `${today().slice(0, 4)}-01-01`;
-periodForm.to.value = today();
 periodForm.addEventListener('submit', (e) => {
   e.preventDefault();
   loadFinancials();
@@ -841,23 +935,38 @@ function finGroupRows(group) {
 const subtotal = (label, value, cls = 'sub') => `<tr class="${cls}"><td>${esc(label)}</td><td class="num">${fmt(value, BASE)}</td></tr>`;
 
 async function loadFinancials() {
-  const from = periodForm.from.value;
-  const to = periodForm.to.value;
+  await Promise.all([loadPeriods(), loadCostCenters()]);
+  fillPeriodSelects(periodForm);
+  const ccSel = periodForm.cost_center;
+  const ccPrev = ccSel.value;
+  ccSel.innerHTML =
+    '<option value="">Whole company</option>' +
+    COST_CENTERS.map((c) => `<option value="${esc(c.code)}">${esc(c.code)} ${esc(c.name)}</option>`).join('') +
+    '<option value="none">Unallocated</option>';
+  ccSel.value = ccPrev;
+  const { from, to } = periodRange(periodForm);
   let r;
+  let ccr;
   try {
-    r = await api(`/api/reports?from=${from}&to=${to}`);
+    [r, ccr] = await Promise.all([
+      api(`/api/reports?from=${from}&to=${to}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}`),
+      api(`/api/reports/cost-centers?from=${from}&to=${to}`),
+    ]);
   } catch (err) {
     document.getElementById('pl-period').textContent = err.message;
     return;
   }
   const pl = r.profit_and_loss;
-  document.getElementById('pl-period').textContent = `${r.from} to ${r.to}`;
+  document.getElementById('pl-period').textContent =
+    `${r.from} to ${r.to}` + (r.cost_center ? ` · ${r.cost_center === 'none' ? 'unallocated lines only' : 'cost centre ' + ccName(r.cost_center)}` : ' · whole company');
   document.getElementById('pl-table').innerHTML =
     finGroupRows(pl.revenue) +
     finGroupRows(pl.cost_of_sales) +
     subtotal('Gross profit', pl.gross_profit) +
     finGroupRows(pl.overheads) +
-    subtotal('Operating result', pl.operating_result) +
+    subtotal('EBITDA', pl.ebitda) +
+    finGroupRows(pl.depreciation) +
+    subtotal('Operating result (EBIT)', pl.operating_result) +
     finGroupRows(pl.financial_income) +
     finGroupRows(pl.financial_expenses) +
     subtotal('Net result', pl.net_result, 'grand');
@@ -910,6 +1019,8 @@ async function loadFinancials() {
     `<tr class="cat"><td>Cash &amp; bank at ${esc(r.opening_date)}</td><td class="num">${fmt(cf.opening_cash, BASE)}</td></tr>` +
     `<tr class="cat"><td>Cash &amp; bank at ${esc(r.to)}</td><td class="num">${fmt(cf.closing_cash, BASE)}</td></tr>` +
     cf.cash_accounts.map((a) => `<tr class="acct"><td>${esc(a.code)} ${esc(a.name)}</td><td class="num">${fmt(a.closing)}</td></tr>`).join('');
+  renderCostCenterTable(ccr);
+
   const cfCheck = document.getElementById('cf-check');
   cfCheck.textContent = cf.reconciles ? '✓ Opening cash plus net change equals closing cash.' : '✗ Cash flow does not reconcile.';
   cfCheck.className = 'hint ' + (cf.reconciles ? 'pos' : 'neg');
@@ -919,6 +1030,7 @@ async function loadFinancials() {
 
 async function loadSetup() {
   await Promise.all([loadAccounts(), loadParties()]);
+  document.getElementById('period-error').textContent = '';
   const catOptions = (selected, bankOnly) =>
     META.categories
       .filter((c) => !bankOnly || c.key === 'cash')
@@ -948,10 +1060,25 @@ async function loadSetup() {
     tr.querySelector('.edit-account').addEventListener('click', () => openAccountDialog(ACCOUNTS.find((a) => a.code === tr.dataset.code)));
   });
 
-  const partyRows = (list) =>
-    list.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td></tr>`).join('');
-  document.querySelector('#customers-table tbody').innerHTML = partyRows(CUSTOMERS);
-  document.querySelector('#suppliers-table tbody').innerHTML = partyRows(SUPPLIERS);
+  document.querySelector('#customers-table tbody').innerHTML = CUSTOMERS.map(
+    (p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
+      <td><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button></td></tr>`
+  ).join('');
+  document.querySelector('#suppliers-table tbody').innerHTML = SUPPLIERS.map(
+    (p) => `<tr><td>${esc(p.name)}<div class="muted">${esc(p.country || '')}</div></td><td>${p.currency}</td>
+      <td class="muted">${esc(bankDetailsText(p) || 'none')}</td>
+      <td><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button></td></tr>`
+  ).join('');
+  document.querySelectorAll('[data-edit-party]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const kind = btn.dataset.editParty;
+      openPartyDialog(kind, (kind === 'customer' ? CUSTOMERS : SUPPLIERS).find((p) => p.id === Number(btn.dataset.id)));
+    })
+  );
+
+  await Promise.all([loadCostCenters(), loadPeriods()]);
+  renderCostCenterList();
+  renderPeriods();
 
   renderFxStatus(await api('/api/fx/status'));
 }
@@ -1034,17 +1161,23 @@ accountForm.addEventListener('submit', async (e) => {
 
 const partyForm = document.getElementById('form-party');
 let partyKind = 'supplier';
+let editingParty = null;
 
-document.querySelectorAll('[data-new-party]').forEach((btn) =>
-  btn.addEventListener('click', () => {
-    partyKind = btn.dataset.newParty;
-    partyForm.reset();
-    partyForm.currency.innerHTML = currencyOptions(BASE);
-    document.getElementById('party-dialog-title').textContent = partyKind === 'customer' ? 'New customer' : 'New supplier';
-    document.getElementById('party-error').textContent = '';
-    document.getElementById('dialog-party').showModal();
-  })
-);
+function openPartyDialog(kind, party) {
+  partyKind = kind;
+  editingParty = party || null;
+  partyForm.reset();
+  partyForm.currency.innerHTML = currencyOptions(party ? party.currency : BASE);
+  const noun = kind === 'customer' ? 'customer' : 'supplier';
+  document.getElementById('party-dialog-title').textContent = party ? `Edit ${noun}` : `New ${noun}`;
+  document.getElementById('party-error').textContent = '';
+  if (party) {
+    for (const f of ['name', 'country', 'vat_number', 'sort_code', 'account_number', 'iban', 'bic']) partyForm[f].value = party[f] || '';
+  }
+  document.getElementById('dialog-party').showModal();
+}
+
+document.querySelectorAll('[data-new-party]').forEach((btn) => btn.addEventListener('click', () => openPartyDialog(btn.dataset.newParty, null)));
 
 partyForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1053,9 +1186,15 @@ partyForm.addEventListener('submit', async (e) => {
     country: partyForm.country.value.trim(),
     currency: partyForm.currency.value,
     vat_number: partyForm.vat_number.value.trim(),
+    sort_code: partyForm.sort_code.value.trim(),
+    account_number: partyForm.account_number.value.trim(),
+    iban: partyForm.iban.value.trim(),
+    bic: partyForm.bic.value.trim(),
   };
+  const base = partyKind === 'customer' ? '/api/customers' : '/api/suppliers';
   try {
-    await post(partyKind === 'customer' ? '/api/customers' : '/api/suppliers', payload);
+    if (editingParty) await post(`${base}/${editingParty.id}`, payload, 'PUT');
+    else await post(base, payload);
     document.getElementById('dialog-party').close();
     loadSetup();
   } catch (err) {
@@ -1063,12 +1202,679 @@ partyForm.addEventListener('submit', async (e) => {
   }
 });
 
+// ---------- P&L by cost centre (Financials) ----------
+
+function renderCostCenterTable(r) {
+  const cols = r.cost_centers;
+  const table = document.getElementById('cc-table');
+  if (!cols.length) {
+    table.innerHTML = '<tr><td class="hint">No P&amp;L postings in this period.</td></tr>';
+    return;
+  }
+  const head = `<thead><tr><th></th>${cols.map((c) => `<th class="num">${esc(c.code ? `${c.code} ${c.name}` : c.name)}</th>`).join('')}<th class="num">Total</th></tr></thead>`;
+  const row = (label, key, cls) => {
+    const total = cols.reduce((t, c) => t + c[key], 0);
+    return `<tr class="${cls}"><td>${esc(label)}</td>${cols.map((c) => `<td class="num">${fmt(c[key])}</td>`).join('')}<td class="num">${fmt(total)}</td></tr>`;
+  };
+  const cat = (key) => r.categories.find((c) => c.key === key).name;
+  table.innerHTML =
+    head +
+    '<tbody>' +
+    row(cat('revenue'), 'revenue', 'cat') +
+    row(cat('cost_of_sales'), 'cost_of_sales', 'cat') +
+    row('Gross profit', 'gross_profit', 'sub') +
+    row(cat('overheads'), 'overheads', 'cat') +
+    row('EBITDA', 'ebitda', 'sub') +
+    row(cat('depreciation'), 'depreciation', 'cat') +
+    row('Operating result (EBIT)', 'operating_result', 'sub') +
+    row(cat('financial_income'), 'financial_income', 'cat') +
+    row(cat('financial_expenses'), 'financial_expenses', 'cat') +
+    row('Net result', 'net_result', 'grand') +
+    '</tbody>';
+}
+
+// ---------- Setup: cost centres & periods ----------
+
+function renderCostCenterList() {
+  const tbody = document.querySelector('#cc-list-table tbody');
+  tbody.innerHTML = COST_CENTERS.map(
+    (c) => `<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.name)}</td>
+      <td>${c.active ? '<span class="badge paid">Active</span>' : '<span class="badge open">Inactive</span>'}</td>
+      <td><button class="btn btn-small" data-cc-toggle="${esc(c.code)}">${c.active ? 'Deactivate' : 'Activate'}</button></td></tr>`
+  ).join('');
+  tbody.querySelectorAll('[data-cc-toggle]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const c = COST_CENTERS.find((x) => x.code === btn.dataset.ccToggle);
+      try {
+        await post(`/api/cost-centers/${encodeURIComponent(c.code)}`, { active: !c.active }, 'PUT');
+        await loadCostCenters();
+        renderCostCenterList();
+      } catch (err) {
+        document.getElementById('cc-error').textContent = err.message;
+      }
+    })
+  );
+}
+
+document.getElementById('form-cc').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  document.getElementById('cc-error').textContent = '';
+  try {
+    await post('/api/cost-centers', { code: form.code.value.trim(), name: form.name.value.trim() });
+    form.reset();
+    await loadCostCenters();
+    renderCostCenterList();
+  } catch (err) {
+    document.getElementById('cc-error').textContent = err.message;
+  }
+});
+
+function renderPeriods() {
+  const tbody = document.querySelector('#periods-table tbody');
+  // Future months are created automatically when needed; list only up to the current month.
+  tbody.innerHTML = PERIODS.filter((p) => p.period <= currentPeriod() || p.journal_count > 0).map(
+    (p) => `<tr>
+      <td><strong>${periodLabel(p.period)}</strong><div class="muted">${esc(p.start_date)} – ${esc(p.end_date)}</div></td>
+      <td class="num">${p.journal_count}</td>
+      <td class="num">${p.depreciation ? fmt(p.depreciation, BASE) : ''}</td>
+      <td>${p.status === 'closed' ? '<span class="badge closed">Closed</span>' : '<span class="badge paid">Open</span>'}</td>
+      <td><button class="btn btn-small" data-period="${p.period}" data-action="${p.status === 'closed' ? 'reopen' : 'close'}">${p.status === 'closed' ? 'Reopen' : 'Close'}</button></td>
+    </tr>`
+  ).join('');
+  tbody.querySelectorAll('[data-period]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const errEl = document.getElementById('period-error');
+      errEl.textContent = '';
+      try {
+        await post(`/api/periods/${btn.dataset.period}/${btn.dataset.action}`, {});
+        await loadPeriods();
+        renderPeriods();
+      } catch (err) {
+        errEl.textContent = err.message;
+      }
+    })
+  );
+}
+
+// ---------- Charts (inline SVG) ----------
+// Categorical colours, validated for colour-vision deficiency (slots 1-3 of the reference palette).
+const SERIES = ['#2a78d6', '#eb6834', '#1baf7a'];
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs = {}, parent) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (parent) parent.appendChild(el);
+  return el;
+}
+
+function compactGbp(v) {
+  const a = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (a >= 1e6) return `${sign}£${(a / 1e6).toFixed(1)}m`;
+  if (a >= 1e3) return `${sign}£${Math.round(a / 1e3)}k`;
+  return `${sign}£${Math.round(a)}`;
+}
+
+function niceTicks(min, max, count = 5) {
+  if (min === max) max = min + 1;
+  const raw = (max - min) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const ticks = [];
+  for (let t = Math.floor(min / step) * step; t <= max + step * 0.001; t += step) ticks.push(Math.round(t * 100) / 100);
+  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step);
+  return ticks;
+}
+
+function makeTooltip(container) {
+  let tip = container.querySelector('.chart-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'chart-tip';
+    tip.hidden = true;
+    container.appendChild(tip);
+  }
+  return tip;
+}
+
+/** Tooltip rows: value first (strong), series name after, keyed with a short line in the series colour. */
+function fillTooltip(tip, title, rows) {
+  tip.replaceChildren();
+  const h = document.createElement('div');
+  h.className = 'tip-title';
+  h.textContent = title;
+  tip.appendChild(h);
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.className = 'tip-row';
+    if (r.color) {
+      const key = document.createElement('span');
+      key.className = 'tip-key';
+      key.style.background = r.color;
+      row.appendChild(key);
+    }
+    const v = document.createElement('strong');
+    v.textContent = r.value;
+    row.appendChild(v);
+    const n = document.createElement('span');
+    n.className = 'muted';
+    n.textContent = ` ${r.name}`;
+    row.appendChild(n);
+    tip.appendChild(row);
+  }
+}
+
+/** Line chart: one shared GBP axis, crosshair + tooltip, legend and direct end labels. */
+function lineChart(container, labels, series) {
+  container.replaceChildren();
+  const legend = document.createElement('div');
+  legend.className = 'chart-legend';
+  if (series.length > 1) {
+    for (const s of series) {
+      const item = document.createElement('span');
+      const key = document.createElement('span');
+      key.className = 'legend-line';
+      key.style.background = s.color;
+      item.append(key, document.createTextNode(s.name));
+      legend.appendChild(item);
+    }
+    container.appendChild(legend);
+  }
+  const W = Math.max(container.clientWidth || 520, 320);
+  const H = 240;
+  const m = { l: 56, r: series.length > 1 ? 104 : 16, t: 10, b: 26 };
+  const values = series.flatMap((s) => s.values);
+  const ticks = niceTicks(Math.min(0, ...values), Math.max(0, ...values));
+  const y0 = ticks[0];
+  const y1 = ticks[ticks.length - 1];
+  const x = (i) => m.l + (labels.length === 1 ? (W - m.l - m.r) / 2 : (i * (W - m.l - m.r)) / (labels.length - 1));
+  const y = (v) => m.t + ((y1 - v) / (y1 - y0)) * (H - m.t - m.b);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', height: H, role: 'img', 'aria-label': series.map((s) => s.name).join(', ') + ' per month' });
+  for (const t of ticks) {
+    svgEl('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: t === 0 ? 'axis-zero' : 'grid' }, svg);
+    const lab = svgEl('text', { x: m.l - 8, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' }, svg);
+    lab.textContent = compactGbp(t);
+  }
+  labels.forEach((l, i) => {
+    const lab = svgEl('text', { x: x(i), y: H - 8, class: 'tick', 'text-anchor': 'middle' }, svg);
+    lab.textContent = periodLabel(l).replace(' 20', " '");
+  });
+  for (const s of series) {
+    const d = s.values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+    if (labels.length === 1) svgEl('circle', { cx: x(0), cy: y(s.values[0]), r: 4, fill: s.color }, svg);
+  }
+  // Direct labels at the line ends, nudged apart so they never overlap.
+  if (series.length > 1) {
+    const ends = series.map((s) => ({ s, y: y(s.values[s.values.length - 1]) })).sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 14) ends[i].y = ends[i - 1].y + 14;
+    for (const e of ends) {
+      svgEl('line', { x1: W - m.r + 6, x2: W - m.r + 16, y1: e.y, y2: e.y, stroke: e.s.color, 'stroke-width': 2 }, svg);
+      const t = svgEl('text', { x: W - m.r + 20, y: e.y + 4, class: 'end-label' }, svg);
+      t.textContent = e.s.name;
+    }
+  }
+  const cross = svgEl('line', { y1: m.t, y2: H - m.b, class: 'crosshair', visibility: 'hidden' }, svg);
+  const dots = series.map((s) => svgEl('circle', { r: 4, fill: s.color, stroke: '#fff', 'stroke-width': 2, visibility: 'hidden' }, svg));
+  const hit = svgEl('rect', { x: m.l - 10, y: m.t, width: W - m.l - m.r + 20, height: H - m.t - m.b, fill: 'transparent' }, svg);
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  wrap.appendChild(svg);
+  container.appendChild(wrap);
+  const tip = makeTooltip(wrap);
+  const show = (i) => {
+    cross.setAttribute('x1', x(i));
+    cross.setAttribute('x2', x(i));
+    cross.setAttribute('visibility', 'visible');
+    dots.forEach((d, k) => {
+      d.setAttribute('cx', x(i));
+      d.setAttribute('cy', y(series[k].values[i]));
+      d.setAttribute('visibility', 'visible');
+    });
+    fillTooltip(tip, periodLabel(labels[i]), series.map((s) => ({ value: fmt(s.values[i], BASE), name: s.name, color: s.color })));
+    tip.hidden = false;
+    const px = (x(i) / W) * wrap.clientWidth;
+    tip.style.left = `${Math.min(px + 12, wrap.clientWidth - tip.offsetWidth - 4)}px`;
+    tip.style.top = '8px';
+  };
+  hit.addEventListener('pointermove', (e) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((e.clientX - box.left) / box.width) * W;
+    let best = 0;
+    labels.forEach((_, i) => {
+      if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i;
+    });
+    show(best);
+  });
+  hit.addEventListener('pointerleave', () => {
+    tip.hidden = true;
+    cross.setAttribute('visibility', 'hidden');
+    dots.forEach((d) => d.setAttribute('visibility', 'hidden'));
+  });
+}
+
+/** Horizontal bars for one measure (single hue), value labels at the bar ends, per-bar tooltip. */
+function barChart(container, items) {
+  container.replaceChildren();
+  if (!items.length) {
+    container.innerHTML = '<p class="hint">No costs with a cost centre in this period.</p>';
+    return;
+  }
+  const W = Math.max(container.clientWidth || 520, 320);
+  const rowH = 34;
+  const labelW = Math.min(220, W * 0.38);
+  const H = items.length * rowH + 8;
+  const max = Math.max(...items.map((i) => i.value));
+  const scale = (v) => (v / max) * (W - labelW - 90);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', height: H, role: 'img', 'aria-label': 'Operating costs per cost centre' });
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  wrap.appendChild(svg);
+  container.appendChild(wrap);
+  const tip = makeTooltip(wrap);
+  items.forEach((it, i) => {
+    const cy = 4 + i * rowH + rowH / 2;
+    const name = svgEl('text', { x: labelW - 10, y: cy + 4, class: 'bar-label', 'text-anchor': 'end' }, svg);
+    name.textContent = it.label;
+    const w = Math.max(scale(it.value), 2);
+    // Square at the baseline, 4px rounded at the data end.
+    const r = Math.min(4, w / 2);
+    const x0 = labelW;
+    const top = cy - 8;
+    const d = `M${x0},${top} H${x0 + w - r} Q${x0 + w},${top} ${x0 + w},${top + r} V${top + 16 - r} Q${x0 + w},${top + 16} ${x0 + w - r},${top + 16} H${x0} Z`;
+    const bar = svgEl('path', { d, fill: SERIES[0], class: 'bar' }, svg);
+    const val = svgEl('text', { x: x0 + w + 8, y: cy + 4, class: 'bar-value' }, svg);
+    val.textContent = fmt(it.value, BASE);
+    const hit = svgEl('rect', { x: 0, y: cy - rowH / 2, width: W, height: rowH, fill: 'transparent', tabindex: 0 }, svg);
+    const show = () => {
+      bar.classList.add('hover');
+      fillTooltip(tip, it.label, [{ value: fmt(it.value, BASE), name: it.sub || '' }]);
+      tip.hidden = false;
+      tip.style.left = `${Math.min(((x0 + w) / W) * wrap.clientWidth + 12, wrap.clientWidth - tip.offsetWidth - 4)}px`;
+      tip.style.top = `${(top / H) * wrap.clientHeight - 6}px`;
+    };
+    const hide = () => {
+      bar.classList.remove('hover');
+      tip.hidden = true;
+    };
+    hit.addEventListener('pointerenter', show);
+    hit.addEventListener('focus', show);
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('blur', hide);
+  });
+}
+
+// ---------- KPI dashboard ----------
+
+const kpiForm = document.getElementById('form-kpi-period');
+kpiForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  loadKpis();
+});
+let lastKpis = null;
+
+const pct = (v) => (v === null || v === undefined ? 'n/a' : `${(v * 100).toFixed(1)}%`);
+const times = (v) => (v === null || v === undefined ? 'n/a' : `${v.toFixed(2)}×`);
+const daysTxt = (v) => (v === null || v === undefined ? 'n/a' : `${v} days`);
+
+async function loadKpis() {
+  await loadPeriods();
+  fillPeriodSelects(kpiForm);
+  const { from, to } = periodRange(kpiForm);
+  const k = await api(`/api/kpis?from=${from}&to=${to}`);
+  lastKpis = k;
+  const tile = (label, value, sub, tone) =>
+    `<div class="card kpi"><div class="label">${esc(label)}</div><div class="value ${tone || ''}">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
+  const signTone = (v) => (v === null ? '' : v < 0 ? 'neg' : '');
+  const groups = [
+    [
+      'Profitability',
+      [
+        tile('Revenue', fmt(k.revenue, BASE), `${k.from} to ${k.to}`),
+        tile('Gross margin', pct(k.gross_margin), `gross profit ${fmt(k.gross_profit, BASE)}`),
+        tile('EBITDA', fmt(k.ebitda, BASE), `${pct(k.ebitda_margin)} of revenue`, signTone(k.ebitda)),
+        tile('Net result', fmt(k.net_result, BASE), `net margin ${pct(k.net_margin)}`, signTone(k.net_result)),
+      ],
+    ],
+    [
+      'Liquidity',
+      [
+        tile('Cash & bank', fmt(k.cash, BASE), `at ${k.to}`),
+        tile('Working capital', fmt(k.working_capital, BASE), 'current assets minus current liabilities', signTone(k.working_capital)),
+        tile('Current ratio', times(k.current_ratio), 'current assets ÷ current liabilities'),
+        tile('Quick ratio', times(k.quick_ratio), '(cash + receivables) ÷ current liabilities'),
+      ],
+    ],
+    [
+      'Efficiency',
+      [
+        tile('Days sales outstanding', daysTxt(k.dso), 'receivables ÷ invoiced sales × days'),
+        tile('Days payables outstanding', daysTxt(k.dpo), 'payables ÷ invoiced purchases × days'),
+        tile('Overheads / revenue', pct(k.overhead_ratio), `depreciation ${fmt(k.depreciation, BASE)} not included`),
+        tile('Realised FX result', `${k.fx_result >= 0 ? '+' : ''}${fmt(k.fx_result, BASE)}`, 'gains minus losses on settlements', signTone(k.fx_result)),
+      ],
+    ],
+    [
+      'Solvency',
+      [
+        tile('Solvency', pct(k.solvency), 'equity ÷ total assets'),
+        tile('Return on equity', pct(k.return_on_equity), 'net result ÷ equity, for the period', signTone(k.return_on_equity)),
+      ],
+    ],
+  ];
+  document.getElementById('kpi-groups').innerHTML = groups
+    .map(([title, tiles]) => `<div class="kpi-group"><h3>${esc(title)}</h3><div class="cards">${tiles.join('')}</div></div>`)
+    .join('');
+  renderKpiCharts();
+}
+
+function renderKpiCharts() {
+  const k = lastKpis;
+  if (!k) return;
+  const labels = k.months.map((m) => m.period);
+  lineChart(document.getElementById('chart-trend'), labels, [
+    { name: 'Revenue', color: SERIES[0], values: k.months.map((m) => m.revenue) },
+    { name: 'Gross profit', color: SERIES[1], values: k.months.map((m) => m.gross_profit) },
+    { name: 'Net result', color: SERIES[2], values: k.months.map((m) => m.net_result) },
+  ]);
+  lineChart(document.getElementById('chart-cash'), labels, [{ name: 'Cash & bank', color: SERIES[0], values: k.months.map((m) => m.cash) }]);
+  barChart(
+    document.getElementById('chart-cc'),
+    k.cost_by_cost_center.map((c) => ({ label: c.code ? `${c.code} ${c.name}` : c.name, value: c.costs, sub: 'operating costs' }))
+  );
+  document.getElementById('table-trend').innerHTML = `<table class="table"><thead><tr><th>Month</th><th class="num">Revenue</th><th class="num">Gross profit</th><th class="num">Net result</th></tr></thead><tbody>${k.months
+    .map((m) => `<tr><td>${periodLabel(m.period)}</td><td class="num">${fmt(m.revenue)}</td><td class="num">${fmt(m.gross_profit)}</td><td class="num">${fmt(m.net_result)}</td></tr>`)
+    .join('')}</tbody></table>`;
+  document.getElementById('table-cash').innerHTML = `<table class="table"><thead><tr><th>Month end</th><th class="num">Cash &amp; bank</th></tr></thead><tbody>${k.months
+    .map((m) => `<tr><td>${periodLabel(m.period)}</td><td class="num">${fmt(m.cash)}</td></tr>`)
+    .join('')}</tbody></table>`;
+}
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!document.getElementById('view-kpis').hidden) renderKpiCharts();
+  }, 150);
+});
+
+// ---------- Fixed assets ----------
+
+let ASSETS = [];
+let assetFilter = '';
+
+async function loadAssets() {
+  const [data] = await Promise.all([api('/api/assets'), loadCostCenters(), loadPeriods()]);
+  ASSETS = data.assets;
+  const total = (k) => ASSETS.reduce((t, a) => t + a[k], 0);
+  document.getElementById('asset-cards').innerHTML = `
+    <div class="card"><div class="label">Cost</div><div class="value">${fmt(total('acquisition_cost'), BASE)}</div><div class="sub">${ASSETS.length} assets</div></div>
+    <div class="card"><div class="label">Accumulated depreciation</div><div class="value">${fmt(total('accumulated_depreciation'), BASE)}</div><div class="sub">written off to date</div></div>
+    <div class="card"><div class="label">Net book value</div><div class="value">${fmt(total('book_value'), BASE)}</div><div class="sub">cost minus depreciation</div></div>
+    <div class="card"><div class="label">Depreciation per month</div><div class="value">${fmt(total('monthly_depreciation'), BASE)}</div><div class="sub">at current book values</div></div>`;
+
+  const st = data.depreciation;
+  const lastPeriods = (st.last_result || []).map((r) => r.period);
+  document.getElementById('depr-status').textContent =
+    `Depreciation is booked automatically as soon as a month has ended: the server checks on start-up and every ${st.runs_every_hours} hours` +
+    (st.last_run ? ` (last check ${new Date(st.last_run).toLocaleString()}${lastPeriods.length ? `, booked ${lastPeriods.join(', ')}` : ', nothing due'})` : '') +
+    '. You can also run it for a period by hand, e.g. the current month before closing it.';
+  const sel = document.querySelector('#form-depr select[name=period]');
+  const prev = sel.value;
+  sel.innerHTML = [...PERIODS]
+    .filter((p) => p.status === 'open' && p.period <= currentPeriod())
+    .sort((a, b) => b.period.localeCompare(a.period))
+    .map((p) => `<option value="${p.period}">${periodLabel(p.period)}${p.depreciation ? ` (booked ${fmt(p.depreciation, BASE)})` : ''}</option>`)
+    .join('');
+  if (prev) sel.value = prev;
+  renderAssetTable();
+}
+
+function renderAssetTable() {
+  const rows = ASSETS.filter((a) => !assetFilter || a.asset_type === assetFilter);
+  const tbody = document.querySelector('#assets-table tbody');
+  tbody.innerHTML = rows
+    .map(
+      (a) => `<tr class="clickable" data-id="${a.id}">
+        <td><strong>${esc(a.asset_number)}</strong></td>
+        <td>${esc(a.name)}${a.description ? `<div class="muted">${esc(a.description)}</div>` : ''}</td>
+        <td>${a.asset_type === 'machinery' ? 'Machinery' : 'Inventory'}</td>
+        <td>${esc(ccName(a.cost_center))}</td>
+        <td>${esc(a.acquisition_date)}</td>
+        <td class="num">${fmt(a.acquisition_cost)}</td>
+        <td class="num">${a.depreciation_rate}%<div class="muted">${a.useful_life_years} yrs</div></td>
+        <td class="num">${fmt(a.accumulated_depreciation)}</td>
+        <td class="num"><strong>${fmt(a.book_value)}</strong></td>
+        <td class="num">${fmt(a.monthly_depreciation)}</td>
+        <td>${a.status === 'In use' ? '<span class="badge paid">In use</span>' : '<span class="badge closed">Fully depreciated</span>'}</td>
+      </tr>`
+    )
+    .join('');
+  const sum = (k) => rows.reduce((t, a) => t + a[k], 0);
+  tbody.innerHTML += `<tr class="total"><td colspan="5">Total${assetFilter ? ` ${assetFilter}` : ''}</td><td class="num">${fmt(sum('acquisition_cost'))}</td><td></td>
+    <td class="num">${fmt(sum('accumulated_depreciation'))}</td><td class="num">${fmt(sum('book_value'))}</td><td class="num">${fmt(sum('monthly_depreciation'))}</td><td></td></tr>`;
+  tbody.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openAssetDetail(Number(tr.dataset.id))));
+}
+
+document.getElementById('asset-filter').addEventListener('click', (e) => {
+  const btn = e.target.closest('.seg-btn');
+  if (!btn) return;
+  assetFilter = btn.dataset.type;
+  document.querySelectorAll('#asset-filter .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+  renderAssetTable();
+});
+
+document.getElementById('form-depr').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const okEl = document.getElementById('depr-result');
+  const errEl = document.getElementById('depr-error');
+  okEl.textContent = '';
+  errEl.textContent = '';
+  try {
+    const r = await post('/api/assets/depreciation', { period: e.target.period.value });
+    await loadAssets();
+    okEl.textContent = r.assets
+      ? `Booked ${fmt(r.amount, BASE)} depreciation for ${periodLabel(r.period)} on ${r.assets} asset(s).`
+      : `Nothing to book for ${periodLabel(r.period)}: every asset is already depreciated for that month.`;
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+async function openAssetDetail(id) {
+  const a = await api(`/api/assets/${id}`);
+  const upcoming = a.schedule.slice(0, 12);
+  const last = a.schedule[a.schedule.length - 1];
+  document.getElementById('detail-body').innerHTML = `
+    <h2>${esc(a.asset_number)} ${esc(a.name)}</h2>
+    ${a.description ? `<p class="hint">${esc(a.description)}</p>` : ''}
+    <div class="detail-grid">
+      <div><span class="k">Type:</span> ${esc(a.type_name)}</div>
+      <div><span class="k">Cost centre:</span> ${esc(ccName(a.cost_center)) || '-'}</div>
+      <div><span class="k">Acquired:</span> ${esc(a.acquisition_date)}</div>
+      <div><span class="k">Cost:</span> ${fmt(a.acquisition_cost, BASE)}</div>
+      <div><span class="k">Depreciation:</span> ${a.depreciation_rate}% a year (${a.useful_life_years} years), ${fmt(a.monthly_depreciation, BASE)} a month</div>
+      <div><span class="k">Book value:</span> <strong>${fmt(a.book_value, BASE)}</strong> (${fmt(a.accumulated_depreciation, BASE)} written off)</div>
+      ${a.opening_depreciation ? `<div><span class="k">Before these books:</span> ${fmt(a.opening_depreciation, BASE)} written off</div>` : ''}
+      <div><span class="k">Status:</span> ${esc(a.status)}</div>
+    </div>
+    <div class="section-title">Ledgers</div>
+    <p class="hint">Investment ${esc(a.accounts.cost.code)} ${esc(a.accounts.cost.name)} · Accumulated depreciation ${esc(a.accounts.accumulated.code)} ${esc(a.accounts.accumulated.name)} · Depreciation ${esc(a.accounts.expense.code)} ${esc(a.accounts.expense.name)}</p>
+    <div class="grid-2 even">
+      <div>
+        <div class="section-title">Booked</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Period</th><th class="num">Depreciation</th></tr></thead><tbody>${
+          a.history.map((h) => `<tr><td>${periodLabel(h.period)}</td><td class="num">${fmt(h.amount)}</td></tr>`).join('') ||
+          '<tr><td colspan="2" class="hint">Nothing booked yet.</td></tr>'
+        }</tbody></table></div>
+      </div>
+      <div>
+        <div class="section-title">Coming months</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Period</th><th class="num">Depreciation</th><th class="num">Book value after</th></tr></thead><tbody>${
+          upcoming.map((s) => `<tr><td>${periodLabel(s.period)}</td><td class="num">${fmt(s.amount)}</td><td class="num">${fmt(s.book_value_after)}</td></tr>`).join('') ||
+          '<tr><td colspan="3" class="hint">Fully depreciated.</td></tr>'
+        }</tbody></table></div>
+        ${last && a.schedule.length > 12 ? `<p class="hint">…fully written off after ${periodLabel(last.period)}.</p>` : ''}
+      </div>
+    </div>`;
+  document.getElementById('dialog-detail').showModal();
+}
+
+// ----- New asset dialog -----
+
+const assetForm = document.getElementById('form-asset');
+
+document.getElementById('btn-new-asset').addEventListener('click', async () => {
+  await Promise.all([loadAccounts(), loadCostCenters()]);
+  assetForm.reset();
+  assetForm.asset_type.innerHTML = META.asset_types.map((t) => `<option value="${t.key}">${esc(t.name)}</option>`).join('');
+  assetForm.cost_center.innerHTML = ccOptions('');
+  assetForm.acquisition_date.value = today();
+  const banks = bankAccounts().filter((b) => b.bank_currency === BASE);
+  assetForm.contra_account.innerHTML =
+    banks.map((b) => `<option value="${esc(b.code)}">${esc(accountLabel(b))}</option>`).join('') +
+    accountOptions((a) => a.statement === 'BS' && !banks.includes(a) && a.category !== 'fixed_assets' && a.category !== 'accumulated_depreciation');
+  document.getElementById('asset-error').textContent = '';
+  updateAssetHint();
+  document.getElementById('dialog-asset').showModal();
+});
+
+function updateAssetHint() {
+  const cost = parseFloat(assetForm.acquisition_cost.value) || 0;
+  const rate = parseFloat(assetForm.depreciation_rate.value) || 0;
+  document.getElementById('asset-hint').textContent =
+    rate > 0
+      ? `Written off over ${round2(100 / rate)} years: ${fmt((cost * rate) / 100, BASE)} a year, ${fmt(round2((cost * rate) / 1200), BASE)} a month, starting in the month of acquisition.`
+      : '';
+}
+assetForm.addEventListener('input', updateAssetHint);
+
+assetForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const payload = {
+    name: assetForm.name.value.trim(),
+    description: assetForm.description.value.trim(),
+    asset_type: assetForm.asset_type.value,
+    cost_center: assetForm.cost_center.value || null,
+    acquisition_date: assetForm.acquisition_date.value,
+    acquisition_cost: parseFloat(assetForm.acquisition_cost.value),
+    depreciation_rate: parseFloat(assetForm.depreciation_rate.value),
+    booking: assetForm.booking.value,
+    contra_account: assetForm.contra_account.value,
+  };
+  try {
+    await post('/api/assets', payload);
+    document.getElementById('dialog-asset').close();
+    loadAssets();
+  } catch (err) {
+    document.getElementById('asset-error').textContent = err.message;
+  }
+});
+
+// ---------- Pay a purchase invoice through the company's bank ----------
+
+// Main UK business banks and payment apps. The link opens the bank's own site, where the user logs in.
+const UK_BANKS = [
+  { name: 'Barclays', url: 'https://www.barclays.co.uk' },
+  { name: 'HSBC UK', url: 'https://www.hsbc.co.uk' },
+  { name: 'Lloyds Bank', url: 'https://www.lloydsbank.com' },
+  { name: 'NatWest', url: 'https://www.natwest.com' },
+  { name: 'Royal Bank of Scotland', url: 'https://www.rbs.co.uk' },
+  { name: 'Santander UK', url: 'https://www.santander.co.uk' },
+  { name: 'Bank of Scotland', url: 'https://www.bankofscotland.co.uk' },
+  { name: 'TSB', url: 'https://www.tsb.co.uk' },
+  { name: 'Metro Bank', url: 'https://www.metrobankonline.co.uk' },
+  { name: 'Nationwide', url: 'https://www.nationwide.co.uk' },
+  { name: 'Starling Bank', url: 'https://www.starlingbank.com' },
+  { name: 'Monzo', url: 'https://monzo.com' },
+  { name: 'Tide', url: 'https://www.tide.co' },
+  { name: 'Revolut Business', url: 'https://business.revolut.com' },
+  { name: 'Wise Business', url: 'https://wise.com' },
+];
+
+function bankDetailsText(p) {
+  const parts = [];
+  if (p.sort_code || p.account_number) parts.push(`${p.sort_code || '?'} / ${p.account_number || '?'}`);
+  if (p.iban) parts.push(`IBAN ${p.iban}${p.bic ? ` (${p.bic})` : ''}`);
+  return parts.join(' · ');
+}
+
+function rememberedBank() {
+  try {
+    return localStorage.getItem('nb-bank');
+  } catch {
+    return null;
+  }
+}
+
+async function openPayDialog(inv) {
+  await loadParties();
+  const s = SUPPLIERS.find((x) => x.id === inv.party_id) || {};
+  const field = (label, value) =>
+    value
+      ? `<div class="pay-field"><span class="k">${esc(label)}</span><strong>${esc(value)}</strong><button type="button" class="btn btn-small copy-btn" data-copy="${esc(value)}">Copy</button></div>`
+      : '';
+  const ukDomestic = inv.currency === BASE && s.sort_code && s.account_number;
+  document.getElementById('pay-title').textContent = `Pay ${inv.invoice_number} - ${inv.party_name}`;
+  document.getElementById('pay-details').innerHTML = `
+    <div class="pay-amount">${fmt(inv.remaining_amount, inv.currency)} <span class="muted">${inv.currency !== BASE ? `(international payment in ${inv.currency})` : 'to pay'}</span></div>
+    <div class="pay-fields">
+      ${field('Payee', s.name)}
+      ${ukDomestic || !s.iban ? field('Sort code', s.sort_code) + field('Account number', s.account_number) : ''}
+      ${field('IBAN', s.iban)}
+      ${field('BIC / SWIFT', s.bic)}
+      ${field('Amount', inv.remaining_amount.toFixed(2))}
+      ${field('Payment reference', inv.invoice_number)}
+    </div>
+    ${bankDetailsText(s) ? '' : '<p class="error">No bank details for this supplier yet - add them under Setup → Suppliers → Edit.</p>'}`;
+  document.querySelectorAll('#pay-details .copy-btn').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy'), 1200);
+      } catch {
+        btn.textContent = 'Select & copy';
+      }
+    })
+  );
+  renderBankGrid(rememberedBank());
+  document.getElementById('dialog-pay').showModal();
+}
+
+function renderBankGrid(selected) {
+  const grid = document.getElementById('bank-grid');
+  grid.innerHTML = UK_BANKS.map(
+    (b) => `<button type="button" class="bank-btn ${b.name === selected ? 'selected' : ''}" data-bank="${esc(b.name)}">
+      <span class="bank-mark">${esc(b.name.split(' ').map((w) => w[0]).join('').slice(0, 3))}</span>${esc(b.name)}</button>`
+  ).join('');
+  grid.querySelectorAll('.bank-btn').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      try {
+        localStorage.setItem('nb-bank', btn.dataset.bank);
+      } catch {
+        /* remembering the choice is optional */
+      }
+      renderBankGrid(btn.dataset.bank);
+    })
+  );
+  const bank = UK_BANKS.find((b) => b.name === selected);
+  const link = document.getElementById('pay-open-bank');
+  link.hidden = !bank;
+  if (bank) {
+    link.href = bank.url;
+    link.textContent = `Open ${bank.name} ↗`;
+  }
+}
+
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
 
 (async function init() {
   META = await api('/api/meta');
-  await loadAccounts();
+  await Promise.all([loadAccounts(), loadCostCenters(), loadPeriods()]);
   showTab(location.hash.slice(1) || 'dashboard');
 })();

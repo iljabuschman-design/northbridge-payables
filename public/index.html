@@ -18,11 +18,13 @@
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="kpis">KPIs</button>
       <button class="tab" data-tab="sales">Sales invoices</button>
       <button class="tab" data-tab="purchases">Purchase invoices</button>
       <button class="tab" data-tab="bank">Bank</button>
       <button class="tab" data-tab="journals">Journals</button>
       <button class="tab" data-tab="ledger">Ledger</button>
+      <button class="tab" data-tab="assets">Fixed assets</button>
       <button class="tab" data-tab="financials">Financials</button>
       <button class="tab" data-tab="setup">Setup</button>
       <button class="tab" data-tab="assumptions">Assumptions</button>
@@ -55,6 +57,36 @@
             <tbody></tbody>
           </table>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- KPI dashboard -->
+  <section id="view-kpis" class="view" hidden>
+    <div class="panel-header wrap">
+      <h2>Financial KPIs</h2>
+      <form class="period-row period-form" id="form-kpi-period">
+        <label>From <select name="from"></select></label>
+        <label>To <select name="to"></select></label>
+        <button type="submit" class="btn">Update</button>
+      </form>
+    </div>
+    <div id="kpi-groups"></div>
+    <div class="grid-2 even kpi-charts">
+      <div class="panel">
+        <h2>Revenue, gross profit and net result per month</h2>
+        <div class="chart" id="chart-trend"></div>
+        <details class="table-view"><summary>Show as table</summary><div class="table-wrap" id="table-trend"></div></details>
+      </div>
+      <div class="panel">
+        <h2>Cash &amp; bank at month end</h2>
+        <div class="chart" id="chart-cash"></div>
+        <details class="table-view"><summary>Show as table</summary><div class="table-wrap" id="table-cash"></div></details>
+      </div>
+      <div class="panel span-2">
+        <h2>Operating costs per cost centre</h2>
+        <p class="hint">Cost of sales, overheads and depreciation booked on each cost centre in the period.</p>
+        <div class="chart" id="chart-cc"></div>
       </div>
     </div>
   </section>
@@ -129,7 +161,7 @@
     </div>
     <div class="table-wrap">
       <table class="table" id="journals-table">
-        <thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Source</th><th class="num">Lines</th><th class="num">Amount (GBP)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Period</th><th>Reference</th><th>Description</th><th>Source</th><th class="num">Lines</th><th class="num">Amount (GBP)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -142,7 +174,7 @@
     </div>
     <div class="table-wrap">
       <table class="table" id="ledger-table">
-        <thead><tr><th>Date</th><th>Account</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>Description</th><th>FX note</th><th class="num">Debit (GBP)</th><th class="num">Credit (GBP)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -157,13 +189,49 @@
     </div>
   </section>
 
+  <!-- Fixed assets -->
+  <section id="view-assets" class="view" hidden>
+    <div class="panel-header">
+      <h2>Fixed assets</h2>
+      <button class="btn btn-primary" id="btn-new-asset">+ New asset</button>
+    </div>
+    <div class="cards" id="asset-cards"></div>
+    <div class="panel">
+      <h2>Depreciation</h2>
+      <p class="hint" id="depr-status"></p>
+      <form class="period-row" id="form-depr">
+        <label>Period <select name="period"></select></label>
+        <button type="submit" class="btn">Run depreciation for this period</button>
+      </form>
+      <p class="ok-msg" id="depr-result"></p>
+      <p class="error" id="depr-error"></p>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-header">
+        <h2>Asset register</h2>
+        <div class="seg" id="asset-filter">
+          <button class="seg-btn active" data-type="">All</button>
+          <button class="seg-btn" data-type="machinery">Machinery</button>
+          <button class="seg-btn" data-type="inventory">Inventory</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table" id="assets-table">
+          <thead><tr><th>Asset</th><th>Name</th><th>Type</th><th>Cost centre</th><th>Acquired</th><th class="num">Cost</th><th class="num">% / year</th><th class="num">Accumulated</th><th class="num">Book value</th><th class="num">Per month</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <!-- Financial statements -->
   <section id="view-financials" class="view" hidden>
     <div class="panel-header wrap">
       <h2>Financial statements</h2>
-      <form id="form-period" class="period-row">
-        <label>From <input type="date" name="from" required /></label>
-        <label>To <input type="date" name="to" required /></label>
+      <form id="form-period" class="period-row period-form">
+        <label>From <select name="from"></select></label>
+        <label>To <select name="to"></select></label>
+        <label>P&amp;L for <select name="cost_center" id="fin-cc-select"></select></label>
         <button type="submit" class="btn">Update</button>
         <label class="check"><input type="checkbox" id="fin-detail" checked /> Show accounts</label>
       </form>
@@ -184,6 +252,10 @@
         <p class="hint">Indirect method: starts from the result for the period and adjusts for movements in the other balance sheet items.</p>
         <table class="table fin" id="cf-table"></table>
         <p class="hint" id="cf-check"></p>
+      </div>
+      <div class="panel span-2">
+        <h2>Profit &amp; loss by cost centre</h2>
+        <div class="table-wrap"><table class="table fin" id="cc-table"></table></div>
       </div>
     </div>
   </section>
@@ -206,13 +278,43 @@
 
     <div class="grid-2 even" style="margin-top:16px;">
       <div class="panel">
+        <h2>Cost centres</h2>
+        <p class="hint">Departments. Choose one on P&amp;L lines (invoices, journals, bank postings) to split results by department.</p>
+        <div class="table-wrap">
+          <table class="table" id="cc-list-table">
+            <thead><tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <form id="form-cc" class="upload-row" style="margin-top:12px;">
+          <label>Code <input name="code" required maxlength="10" size="6" /></label>
+          <label>Name <input name="name" required maxlength="60" /></label>
+          <button type="submit" class="btn btn-small">+ Add cost centre</button>
+        </form>
+        <p class="error" id="cc-error"></p>
+      </div>
+      <div class="panel">
+        <h2>Periods</h2>
+        <p class="hint">Monthly accounting periods. Closing a period books its depreciation and then blocks any further posting dated in it.</p>
+        <p class="error" id="period-error"></p>
+        <div class="table-wrap periods-wrap">
+          <table class="table" id="periods-table">
+            <thead><tr><th>Period</th><th class="num">Journals</th><th class="num">Depreciation</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2 even" style="margin-top:16px;">
+      <div class="panel">
         <div class="panel-header">
           <h2>Customers</h2>
           <button class="btn btn-small" data-new-party="customer">+ New customer</button>
         </div>
         <div class="table-wrap">
           <table class="table" id="customers-table">
-            <thead><tr><th>Name</th><th>Country</th><th>Ccy</th><th>VAT number</th></tr></thead>
+            <thead><tr><th>Name</th><th>Country</th><th>Ccy</th><th>VAT number</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -224,7 +326,7 @@
         </div>
         <div class="table-wrap">
           <table class="table" id="suppliers-table">
-            <thead><tr><th>Name</th><th>Country</th><th>Ccy</th><th>VAT number</th></tr></thead>
+            <thead><tr><th>Name</th><th>Ccy</th><th>Bank details</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -265,6 +367,18 @@
       <h3>Manual journals &amp; bank statements</h3>
       <p>Manual journals can post to any account and must balance before they are saved. Bank statements are imported from CAMT files and linked to a bank ledger account (automatically via the IBAN once known). Each line is booked against an opposing account or matched to an open invoice. Note that a manual journal or bank line posted directly to accounts receivable/payable does not mark any invoice as paid; use the invoice option for that.</p>
 
+      <h3>Cost centres</h3>
+      <p>Cost centres (departments) can be chosen on P&amp;L lines only: invoice lines, manual journal lines, bank postings to a P&amp;L account, and depreciation (taken from the asset). Balance sheet lines never carry one. Automatic FX gains/losses have no cost centre and show as "Unallocated". The Financials tab can show the P&amp;L for one cost centre, and has a P&amp;L per cost centre.</p>
+
+      <h3>Periods</h3>
+      <p>Every journal belongs to the monthly period of its date. Periods are created automatically when needed. Closing a period first books its depreciation and then blocks all postings dated in it; periods are closed in order and reopened in reverse order. The opening-balance journal is always treated as brought forward in the reports, never as a movement.</p>
+
+      <h3>Fixed assets &amp; depreciation</h3>
+      <p>Assets are either <strong>machinery</strong> or <strong>inventory</strong> (fixtures, fittings &amp; office/IT equipment - Dutch "inventaris", not stock). Each type has its own investment ledger and accumulated depreciation ledger (balance sheet) and depreciation ledger (P&amp;L). Depreciation is straight-line: cost × yearly % ÷ 12 per month (20% = five years), from the month of acquisition until the book value is zero, with no residual value. It is posted as one journal per month, dated the last day, with each asset's cost centre on the expense line. The server checks every 6 hours and books any month that has ended; it can also be run by hand. Assets owned before the books started carry the depreciation already written off as "opening depreciation". Disposals are not modelled yet.</p>
+
+      <h3>Paying suppliers</h3>
+      <p>The Pay button shows the supplier's bank details and the amount, and opens your bank's website. The app does not initiate the payment itself: that would need an authorised Open Banking payment provider. The payment is recorded when the bank statement is uploaded.</p>
+
       <h3>VAT</h3>
       <p>Input VAT is posted to VAT recoverable and output VAT to VAT payable. No VAT return, partial exemption or reverse-charge mechanics are modelled; overseas invoices in the demo data use 0% VAT.</p>
 
@@ -302,7 +416,7 @@
     <div class="section-title">Invoice lines</div>
     <div class="table-wrap">
       <table class="table lines-table" id="invoice-lines">
-        <thead><tr><th>Description</th><th>Ledger account</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th></th></tr></thead>
+        <thead><tr><th>Description</th><th>Ledger account</th><th>Cost centre</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -327,6 +441,15 @@
       <select name="currency" required class="currency-select"></select>
     </label>
     <label>VAT number <input name="vat_number" maxlength="30" /></label>
+    <div class="section-title">Bank details <span class="muted">(used by the Pay button)</span></div>
+    <div class="row">
+      <label>Sort code <input name="sort_code" maxlength="8" placeholder="12-34-56" /></label>
+      <label>Account number <input name="account_number" maxlength="8" placeholder="12345678" /></label>
+    </div>
+    <div class="row">
+      <label style="flex:2">IBAN <input name="iban" maxlength="34" /></label>
+      <label>BIC / SWIFT <input name="bic" maxlength="11" /></label>
+    </div>
     <p class="error" id="party-error"></p>
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
@@ -381,7 +504,7 @@
     <label>Description <input name="description" required maxlength="120" /></label>
     <div class="table-wrap">
       <table class="table lines-table" id="journal-lines">
-        <thead><tr><th>Ledger account</th><th>Line description</th><th class="num">Debit</th><th class="num">Credit</th><th></th></tr></thead>
+        <thead><tr><th>Ledger account</th><th>Cost centre</th><th>Line description</th><th class="num">Debit</th><th class="num">Credit</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -418,6 +541,49 @@
       <button type="submit" class="btn btn-primary">Save account</button>
     </div>
   </form>
+</dialog>
+
+<!-- Fixed asset -->
+<dialog id="dialog-asset">
+  <form id="form-asset" class="form">
+    <h2>New fixed asset</h2>
+    <label>Name <input name="name" required maxlength="80" /></label>
+    <label>Description <input name="description" maxlength="200" /></label>
+    <div class="row">
+      <label>Type <select name="asset_type" required></select></label>
+      <label>Cost centre <select name="cost_center"></select></label>
+    </div>
+    <div class="row">
+      <label>Acquisition date <input name="acquisition_date" type="date" required /></label>
+      <label>Cost (GBP) <input name="acquisition_cost" type="number" min="0.01" step="0.01" required /></label>
+      <label>Depreciation % per year <input name="depreciation_rate" type="number" min="0.01" max="100" step="any" value="20" required /></label>
+    </div>
+    <p class="hint" id="asset-hint"></p>
+    <div class="section-title">Booking the purchase</div>
+    <label class="radio"><input type="radio" name="booking" value="journal" checked /> Post it now: debit the investment ledger, credit
+      <select name="contra_account" id="asset-contra-select"></select></label>
+    <label class="radio"><input type="radio" name="booking" value="existing" /> Already booked (e.g. a purchase invoice line on the investment ledger) - register only</label>
+    <p class="error" id="asset-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save asset</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Pay a purchase invoice through the company's bank -->
+<dialog id="dialog-pay" class="wide">
+  <div class="form">
+    <h2 id="pay-title">Pay invoice</h2>
+    <div id="pay-details"></div>
+    <div class="section-title">Choose your bank</div>
+    <div class="bank-grid" id="bank-grid"></div>
+    <p class="hint">This opens your bank's website in a new tab, where you log in and approve the payment as usual - the app never sees your bank login. Use the invoice number as the payment reference: when the bank statement comes in, the upload settles this invoice automatically.</p>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="btn" data-close>Close</button>
+    <a class="btn btn-primary" id="pay-open-bank" target="_blank" rel="noopener noreferrer" hidden>Open bank</a>
+  </div>
 </dialog>
 
 <!-- Read-only detail (invoice or journal) -->
