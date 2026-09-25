@@ -1031,7 +1031,7 @@ function describeChanges(before, after) {
  *     description can change and P&L lines can move to another P&L account
  *     and/or cost centre (a reclassification). An invoice line follows along.
  */
-async function editJournal(id, data) {
+async function editJournal(id, data, editedBy = null) {
   const j = (await getJournal(id));
   if (!j) throw httpError(404, 'Journal not found');
   if (j.edit_mode === 'locked') throw httpError(400, `Period ${j.period} is closed - reopen it in Setup to change this journal`);
@@ -1094,7 +1094,7 @@ async function editJournal(id, data) {
     const after = journalSnapshot((await getJournal(id)));
     (await db.run("UPDATE journals SET edit_count = edit_count + 1, edited_at = ? WHERE id = ?", nowText(), id));
     (await db.run('INSERT INTO journal_audit (journal_id, summary, before_json, after_json) VALUES (?, ?, ?, ?)', id,
-      describeChanges(before, after),
+      describeChanges(before, after) + (editedBy ? ` (by ${editedBy})` : ''),
       JSON.stringify(before),
       JSON.stringify(after)));
     return (await getJournal(id));

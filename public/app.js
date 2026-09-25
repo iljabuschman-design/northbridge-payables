@@ -50,6 +50,7 @@ async function api(pathname, opts = {}) {
   }
   const res = await fetch(pathname, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && pathname !== '/api/login') showLogin();
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
@@ -218,6 +219,7 @@ const LOADERS = {
 };
 
 function showTab(name) {
+  if (!CURRENT_USER) return; // nothing to show until someone is logged in
   updateEntityNotes();
   if (name.startsWith('account/')) {
     const code = decodeURIComponent(name.slice(8));
@@ -1222,6 +1224,7 @@ async function loadSetup() {
   await Promise.all([loadCostCenters(), loadPeriods()]);
   renderCostCenterList();
   renderPeriods();
+  if (isAdmin()) await loadUsers();
 
   renderFxStatus(await api('/api/fx/status'));
 }
@@ -2318,7 +2321,153 @@ reclassForm.addEventListener('submit', async (e) => {
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
 
+// ---------- Login, users & permissions ----------
+
+let CURRENT_USER = null;
+const isAdmin = () => CURRENT_USER && CURRENT_USER.role === 'admin';
+
+function showLogin() {
+  document.getElementById('login-screen').hidden = false;
+  document.body.classList.add('logged-out');
+}
+
+document.getElementById('form-login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  try {
+    await post('/api/login', { username: f.username.value.trim(), password: f.password.value });
+    location.reload();
+  } catch (err) {
+    errEl.textContent = err.message;
+    f.password.value = '';
+  }
+});
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await post('/api/logout', {}).catch(() => {});
+  location.reload();
+});
+
+document.getElementById('btn-change-password').addEventListener('click', () => {
+  document.getElementById('form-password').reset();
+  document.getElementById('password-error').textContent = '';
+  document.getElementById('dialog-password').showModal();
+});
+
+document.getElementById('form-password').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const errEl = document.getElementById('password-error');
+  if (f.new_password.value !== f.repeat.value) {
+    errEl.textContent = 'The new passwords are not the same';
+    return;
+  }
+  try {
+    await post('/api/me/password', { current_password: f.current_password.value, new_password: f.new_password.value });
+    document.getElementById('dialog-password').close();
+    alert('Your password has been changed.');
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+async function loadUsers() {
+  const users = await api('/api/users');
+  const tbody = document.querySelector('#users-table tbody');
+  tbody.innerHTML = users
+    .map((u) => {
+      const self = u.id === CURRENT_USER.id;
+      return `<tr data-user="${u.id}" data-username="${esc(u.username)}">
+        <td><strong>${esc(u.username)}</strong>${self ? ' <span class="muted">(you)</span>' : ''}</td>
+        <td>${esc(u.name)}</td>
+        <td><select class="u-role" ${self ? 'disabled title="You cannot change your own role"' : ''}>
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+          <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option></select></td>
+        <td class="muted">${esc(u.last_login_at ? u.last_login_at.slice(0, 16) + ' UTC' : 'never')}</td>
+        <td><input class="u-password" type="password" minlength="10" placeholder="min. 10 characters" autocomplete="new-password" />
+          <button type="button" class="btn btn-small u-reset">Set</button></td>
+        <td>${self ? '' : '<button type="button" class="btn btn-small u-delete">Remove</button>'}</td>
+      </tr>`;
+    })
+    .join('');
+  const result = (msg) => {
+    document.getElementById('users-error').textContent = '';
+    document.getElementById('users-result').textContent = msg;
+  };
+  const failed = (err) => {
+    document.getElementById('users-result').textContent = '';
+    document.getElementById('users-error').textContent = err.message;
+  };
+  tbody.querySelectorAll('tr[data-user]').forEach((tr) => {
+    const id = tr.dataset.user;
+    const name = tr.dataset.username;
+    tr.querySelector('.u-role').addEventListener('change', async (e) => {
+      try {
+        await post(`/api/users/${id}`, { role: e.target.value }, 'PUT');
+        result(`${name} is now ${e.target.value === 'admin' ? 'an admin' : 'a viewer'}.`);
+      } catch (err) {
+        failed(err);
+      }
+      loadUsers();
+    });
+    tr.querySelector('.u-reset').addEventListener('click', async () => {
+      try {
+        await post(`/api/users/${id}/password`, { password: tr.querySelector('.u-password').value });
+        result(`New password set for ${name}; they have been logged out everywhere.`);
+        tr.querySelector('.u-password').value = '';
+      } catch (err) {
+        failed(err);
+      }
+    });
+    const del = tr.querySelector('.u-delete');
+    if (del) {
+      // Two clicks: the first asks for confirmation.
+      del.addEventListener('click', async () => {
+        if (del.dataset.confirm !== '1') {
+          del.dataset.confirm = '1';
+          del.textContent = `Really remove ${name}?`;
+          return;
+        }
+        try {
+          await post(`/api/users/${id}`, {}, 'DELETE');
+          result(`${name} has been removed.`);
+        } catch (err) {
+          failed(err);
+        }
+        loadUsers();
+      });
+    }
+  });
+}
+
+document.getElementById('form-user').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const u = await post('/api/users', { username: f.username.value, name: f.name.value, role: f.role.value, password: f.password.value });
+    f.reset();
+    document.getElementById('users-error').textContent = '';
+    document.getElementById('users-result').textContent = `User ${u.username} added.`;
+    loadUsers();
+  } catch (err) {
+    document.getElementById('users-error').textContent = err.message;
+  }
+});
+
 (async function init() {
+  try {
+    CURRENT_USER = await api('/api/me');
+  } catch {
+    return; // not logged in: the login screen is showing
+  }
+  document.body.classList.add(`role-${CURRENT_USER.role}`);
+  document.getElementById('user-menu').hidden = false;
+  document.getElementById('user-name').textContent = CURRENT_USER.name;
+  const roleBadge = document.getElementById('user-role');
+  roleBadge.textContent = CURRENT_USER.role === 'admin' ? 'Admin' : 'View only';
+  roleBadge.className = `badge ${CURRENT_USER.role === 'admin' ? 'partial' : 'open'}`;
   META = await api('/api/meta');
   document.getElementById('demo-banner').hidden = !META.demo_mode;
   const sel = document.getElementById('entity-select');

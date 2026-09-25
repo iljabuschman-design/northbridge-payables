@@ -368,3 +368,23 @@ select:disabled { opacity: .7; }
 
 .demo-banner { background: #fef3c7; color: #92400e; text-align: center; font-size: 13px; font-weight: 600; padding: 8px 16px; border-bottom: 1px solid #fde68a; }
 .btn-edit-entry { padding: 3px 10px; font-size: 12px; }
+
+/* Login & users */
+.login-screen { position: fixed; inset: 0; z-index: 100; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px; width: min(380px, 100%); display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 40px rgba(16, 24, 40, .08); }
+.login-card label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.login-card input { font-size: 14px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; }
+.logged-out .topbar, .logged-out main, .logged-out .demo-banner { visibility: hidden; }
+.user-menu { display: flex; align-items: center; gap: 8px; margin-left: 12px; font-size: 13px; }
+.user-name { font-weight: 600; }
+#users-table input, #users-table select { font-size: 13px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; }
+
+/* Viewers can look but not change: hide every create / edit / pay / post control (the server refuses them anyway). */
+.role-viewer .admin-only,
+.role-viewer [data-new-invoice], .role-viewer #btn-new-journal, .role-viewer .btn-edit-entry, .role-viewer #btn-edit-journal,
+.role-viewer .btn-pay, .role-viewer #btn-record-payment, .role-viewer #btn-pay-invoice,
+.role-viewer #form-upload, .role-viewer .post-cell, .role-viewer .p-post, .role-viewer #btn-auto-settle,
+.role-viewer #btn-new-asset, .role-viewer #form-depr,
+.role-viewer #btn-new-account, .role-viewer .edit-account, .role-viewer [data-new-party], .role-viewer [data-edit-party],
+.role-viewer #form-cc, .role-viewer [data-cc-toggle], .role-viewer [data-period], .role-viewer #btn-refresh-rates { display: none !important; }
+.role-viewer .cat-select { pointer-events: none; background: transparent; border-color: transparent; }

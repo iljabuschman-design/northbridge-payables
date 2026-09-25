@@ -8,6 +8,7 @@ const acct = require('./accounting');
 const fx = require('./fx');
 const bank = require('./bank');
 const assets = require('./assets');
+const auth = require('./auth');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
 
@@ -15,6 +16,7 @@ const { init, db } = require('./db');
 // Requests wait for this; on Vercel it runs once per function instance.
 const ready = init()
   .then(seedIfEmpty)
+  .then(auth.ensureDefaultUsers)
   .then(() => {
     fx.startScheduler();
     assets.startScheduler();
@@ -83,9 +85,49 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-const json = (fn) => async (req, match, query) => fn(await readBody(req), match, query);
+const json = (fn) => async (req, match, query) => fn(await readBody(req), match, query, req);
+
+const adminOnly = (req) => {
+  if (req.user.role !== 'admin') throw acct.httpError(403, 'Only an admin can do this');
+};
+
+// Requests anyone may make without logging in, and the only changes a viewer may make.
+const PUBLIC = new Set(['POST /api/login', 'POST /api/logout']);
+const VIEWER_MAY_POST = new Set(['POST /api/logout', 'POST /api/me/password']);
 
 const routes = [
+  // Login & users
+  {
+    method: 'POST',
+    pattern: /^\/api\/login$/,
+    handler: json(async (body, m, q, req) => {
+      const { token, user } = await auth.login(body.username, body.password);
+      return { __cookie: auth.sessionCookie(req, token), body: { user } };
+    }),
+  },
+  {
+    method: 'POST',
+    pattern: /^\/api\/logout$/,
+    handler: async (req) => {
+      await auth.logout(req);
+      return { __cookie: auth.sessionCookie(req, null), body: { ok: true } };
+    },
+  },
+  { method: 'GET', pattern: /^\/api\/me$/, handler: async (req) => req.user },
+  { method: 'POST', pattern: /^\/api\/me\/password$/, handler: json((body, m, q, req) => auth.changeOwnPassword(req.user, body)) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/users$/,
+    handler: async (req) => {
+      adminOnly(req);
+      return auth.listUsers();
+    },
+  },
+  { method: 'POST', pattern: /^\/api\/users$/, handler: json((body) => auth.createUser(body)) },
+  { method: 'PUT', pattern: /^\/api\/users\/(\d+)$/, handler: json((body, m, q, req) => auth.updateUser(m[1], body, req.user)) },
+  { method: 'POST', pattern: /^\/api\/users\/(\d+)\/password$/, handler: json((body, m) => auth.resetPassword(m[1], body.password)) },
+  { method: 'DELETE', pattern: /^\/api\/users\/(\d+)$/, handler: async (req, m) => auth.deleteUser(m[1], req.user) },
+
   { method: 'GET', pattern: /^\/api\/company$/, handler: async () => acct.getCompany() },
   {
     method: 'GET',
@@ -171,7 +213,7 @@ const routes = [
 
   // Journals & ledger
   { method: 'GET', pattern: /^\/api\/journals$/, handler: async (req, m, q) => acct.listJournals(q.get('entity')) },
-  { method: 'PUT', pattern: /^\/api\/journals\/(\d+)$/, handler: json((body, m) => acct.editJournal(Number(m[1]), body)) },
+  { method: 'PUT', pattern: /^\/api\/journals\/(\d+)$/, handler: json((body, m, q, req) => acct.editJournal(Number(m[1]), body, req.user.name)) },
   { method: 'POST', pattern: /^\/api\/journals$/, handler: json((body) => acct.createManualJournal(body)) },
   {
     method: 'GET',
@@ -265,12 +307,30 @@ async function handler(req, res) {
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith('/api/')) {
+    // Everything except logging in needs a session; viewers may only read.
+    const key = `${req.method} ${pathname}`;
+    if (!PUBLIC.has(key)) {
+      try {
+        req.user = await auth.userFromRequest(req);
+      } catch (err) {
+        console.error(err);
+        return sendJson(res, 500, { error: 'Internal server error' });
+      }
+      if (!req.user) return sendJson(res, 401, { error: 'Please log in' });
+      if (req.method !== 'GET' && req.user.role !== 'admin' && !VIEWER_MAY_POST.has(key)) {
+        return sendJson(res, 403, { error: 'You have view-only access: ask an admin to make changes' });
+      }
+    }
     for (const route of routes) {
       if (route.method !== req.method) continue;
       const match = pathname.match(route.pattern);
       if (!match) continue;
       try {
         const result = await route.handler(req, match, parsed.searchParams);
+        if (result && result.__cookie) {
+          res.setHeader('Set-Cookie', result.__cookie);
+          return sendJson(res, 200, result.body);
+        }
         return sendJson(res, 200, result);
       } catch (err) {
         const status = err.status || 500;

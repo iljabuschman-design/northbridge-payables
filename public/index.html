@@ -7,6 +7,17 @@
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+<!-- Shown until the user is logged in -->
+<div class="login-screen" id="login-screen" hidden>
+  <form class="login-card" id="form-login">
+    <div class="brand"><span class="brand-mark">NB</span><div><div class="brand-name">Northbridge Books</div><div class="brand-sub">Please log in</div></div></div>
+    <label>Username <input name="username" autocomplete="username" required autofocus /></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+    <p class="error" id="login-error"></p>
+    <button type="submit" class="btn btn-primary">Log in</button>
+  </form>
+</div>
+
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
@@ -18,6 +29,12 @@
       <label class="entity-picker">Entity
         <select id="entity-select"></select>
       </label>
+      <div class="user-menu" id="user-menu" hidden>
+        <span class="user-name" id="user-name"></span>
+        <span class="badge" id="user-role"></span>
+        <button type="button" class="btn btn-small" id="btn-change-password">Change password</button>
+        <button type="button" class="btn btn-small" id="btn-logout">Log out</button>
+      </div>
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="dashboard">Dashboard</button>
@@ -375,6 +392,26 @@
       </div>
     </div>
 
+    <div class="panel admin-only" style="margin-top:16px;">
+      <h2>Users</h2>
+      <p class="hint"><strong>Admin</strong>: can do everything, including managing users. <strong>Viewer</strong>: can see everything but can't create, edit, pay, upload or close anything.</p>
+      <p class="error" id="users-error"></p>
+      <p class="ok-msg" id="users-result"></p>
+      <div class="table-wrap">
+        <table class="table" id="users-table">
+          <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Last login</th><th>New password</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <form id="form-user" class="upload-row" style="margin-top:12px;">
+        <label>Username <input name="username" required maxlength="30" size="12" /></label>
+        <label>Name <input name="name" required maxlength="60" /></label>
+        <label>Role <select name="role"><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label>
+        <label>Password <input name="password" type="password" required minlength="10" autocomplete="new-password" /></label>
+        <button type="submit" class="btn btn-small">+ Add user</button>
+      </form>
+    </div>
+
     <div class="panel" style="margin-top:16px;">
       <div class="panel-header">
         <h2>Exchange rates (ECB)</h2>
@@ -408,6 +445,9 @@
 
       <h3>Manual journals &amp; bank statements</h3>
       <p>Manual journals can post to any account and must balance before they are saved. Bank statements are imported from CAMT files and linked to a bank ledger account (automatically via the IBAN once known). Each line is booked against an opposing account or matched to an open invoice. Note that a manual journal or bank line posted directly to accounts receivable/payable does not mark any invoice as paid; use the invoice option for that.</p>
+
+      <h3>Users &amp; access</h3>
+      <p>Everyone logs in. An <strong>admin</strong> can do everything, including managing users (Setup → Users); a <strong>viewer</strong> can see all screens and reports but can't create, edit, pay, upload, close or delete anything - the server refuses those requests, not just the screen. Passwords are stored as scrypt hashes, an account is locked for 15 minutes after 5 wrong passwords, and a login lasts 7 days. Edits to journals record who made them.</p>
 
       <h3>Entities</h3>
       <p>The books hold two legal entities, <strong>Northbridge Trading Ltd</strong> and <strong>Northbridge Holding Ltd</strong>. Every journal, invoice, fixed asset and bank statement belongs to exactly one of them. They share the chart of accounts, cost centres, customers, suppliers and periods, but bank accounts (and Holding's investment in its subsidiary) belong to one entity and can only be posted to by that entity. The selector in the top bar shows one entity or all of them; "All entities" simply adds both sets of books together - intercompany balances, the management fee Holding charges Trading and Holding's investment in Trading are <em>not</em> eliminated, so it is not a consolidation.</p>
@@ -589,6 +629,21 @@
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Save account</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Change own password -->
+<dialog id="dialog-password">
+  <form id="form-password" class="form">
+    <h2>Change your password</h2>
+    <label>Current password <input name="current_password" type="password" required autocomplete="current-password" /></label>
+    <label>New password (at least 10 characters) <input name="new_password" type="password" required minlength="10" autocomplete="new-password" /></label>
+    <label>Repeat new password <input name="repeat" type="password" required minlength="10" autocomplete="new-password" /></label>
+    <p class="error" id="password-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save password</button>
     </div>
   </form>
 </dialog>
