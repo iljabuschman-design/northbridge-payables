@@ -2297,6 +2297,7 @@ document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventLi
 
 (async function init() {
   META = await api('/api/meta');
+  document.getElementById('demo-banner').hidden = !META.demo_mode;
   const sel = document.getElementById('entity-select');
   let saved = null;
   try {

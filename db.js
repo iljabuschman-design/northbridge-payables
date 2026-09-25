@@ -4,7 +4,9 @@ const path = require('path');
 const fs = require('fs');
 const { DatabaseSync } = require('node:sqlite');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'app.db');
+// On Vercel only /tmp is writable, and it is temporary: the demo database is
+// rebuilt (and reseeded) whenever a new function instance starts.
+const DB_PATH = process.env.DB_PATH || (process.env.VERCEL ? '/tmp/northbridge.db' : path.join(__dirname, 'data', 'app.db'));
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);

@@ -89,6 +89,8 @@ const routes = [
       categories: acct.CATEGORIES,
       asset_types: Object.entries(assets.ASSET_TYPES).map(([key, t]) => ({ key, name: t.name })),
       entities: acct.listEntities(),
+      // On Vercel the database lives in temporary storage and is reset regularly.
+      demo_mode: Boolean(process.env.VERCEL),
     }),
   },
   { method: 'GET', pattern: /^\/api\/entities$/, handler: async () => acct.listEntities() },
@@ -232,7 +234,8 @@ const routes = [
   { method: 'POST', pattern: /^\/api\/bank\/lines\/(\d+)\/post$/, handler: json((body, m) => bank.postLine(Number(m[1]), body)) },
 ];
 
-const server = http.createServer(async (req, res) => {
+/** Request handler: a plain Node server locally/Render, a serverless function on Vercel (api/index.js). */
+async function handler(req, res) {
   const parsed = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(parsed.pathname);
 
@@ -259,10 +262,14 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(405);
   res.end('Method not allowed');
-});
+}
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Northbridge Payables app listening on port ${PORT}`);
-});
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  http.createServer(handler).listen(PORT, () => {
+    console.log(`Northbridge Payables app listening on port ${PORT}`);
+  });
+}
+
+module.exports = handler;
 
