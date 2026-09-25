@@ -37,18 +37,24 @@
       </div>
     </div>
     <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="dashboard">Dashboard</button>
-      <button class="tab" data-tab="kpis">KPIs</button>
-      <button class="tab" data-tab="sales">Sales invoices</button>
-      <button class="tab" data-tab="purchases">Purchase invoices</button>
-      <button class="tab" data-tab="bank">Bank</button>
-      <button class="tab" data-tab="journals">Journals</button>
-      <button class="tab" data-tab="ledger">Ledger</button>
-      <button class="tab" data-tab="assets">Fixed assets</button>
-      <button class="tab" data-tab="financials">Financials</button>
+      <button class="tab active" data-tab="suppliers">Suppliers</button>
       <button class="tab" data-tab="vat">VAT</button>
-      <button class="tab" data-tab="setup">Setup</button>
-      <button class="tab" data-tab="assumptions">Assumptions</button>
+      <button class="tab" data-tab="ledger">Ledgers</button>
+      <button class="tab" data-tab="purchases">Purchase invoices</button>
+      <button class="tab" data-tab="assets">Fixed assets</button>
+      <div class="tab-more" id="tab-more">
+        <button class="tab tab-other" id="tab-other" type="button" aria-haspopup="true" aria-expanded="false">Other ▾</button>
+        <div class="tab-menu" id="tab-menu" hidden>
+          <button class="tab" data-tab="dashboard">Dashboard</button>
+          <button class="tab" data-tab="kpis">KPIs</button>
+          <button class="tab" data-tab="sales">Sales invoices</button>
+          <button class="tab" data-tab="bank">Bank</button>
+          <button class="tab" data-tab="journals">Journals</button>
+          <button class="tab" data-tab="financials">Financials</button>
+          <button class="tab" data-tab="setup">Setup</button>
+          <button class="tab" data-tab="assumptions">Assumptions</button>
+        </div>
+      </div>
     </nav>
   </div>
 </header>
@@ -113,6 +119,25 @@
         <h2>Operating costs per cost centre</h2>
         <p class="hint">Cost of sales, overheads and depreciation booked on each cost centre in the period.</p>
         <div class="chart" id="chart-cc"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Suppliers -->
+  <section id="view-suppliers" class="view" hidden>
+    <div class="panel-header">
+      <h2>Suppliers</h2>
+      <div class="header-actions">
+        <button class="btn btn-primary" data-new-party="supplier">+ New supplier</button>
+      </div>
+    </div>
+    <div class="cards" id="supplier-cards"></div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table class="table" id="suppliers-table">
+          <thead><tr><th>Supplier</th><th>Ccy</th><th>VAT number</th><th>Bank details</th><th class="num">Invoices</th><th class="num">Open</th><th class="num">Outstanding (GBP)</th><th>Recognition</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -366,6 +391,26 @@
         </table>
       </div>
     </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>VAT codes</h2>
+      <p class="hint">Each VAT code has a rate and its own GL accounts: VAT on purchase invoices is booked to the input VAT account, VAT on sales invoices to the output VAT account. Choose the code on each invoice line. A code's rate can't change once it has been used: add a new code instead.</p>
+      <p class="error" id="vat-code-error"></p>
+      <div class="table-wrap">
+        <table class="table" id="vat-codes-table">
+          <thead><tr><th>Code</th><th>Description</th><th class="num">Rate</th><th>Input VAT account (purchases)</th><th>Output VAT account (sales)</th><th class="num">Invoice lines</th><th>Status</th><th class="admin-only"></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <form id="form-vat-code" class="upload-row admin-only" style="margin-top:12px;">
+        <label>Code <input name="code" required maxlength="12" size="8" placeholder="VAT5" /></label>
+        <label>Description <input name="description" required maxlength="60" placeholder="Reduced rate 5%" /></label>
+        <label>Rate % <input name="rate" type="number" min="0" max="100" step="any" required size="5" /></label>
+        <label>Input VAT account <select name="purchase_account"></select></label>
+        <label>Output VAT account <select name="sales_account"></select></label>
+        <button type="submit" class="btn btn-small">+ Add VAT code</button>
+      </form>
+    </div>
   </section>
 
   <!-- Setup -->
@@ -414,7 +459,7 @@
       </div>
     </div>
 
-    <div class="grid-2 even" style="margin-top:16px;">
+    <div style="margin-top:16px;">
       <div class="panel">
         <div class="panel-header">
           <h2>Customers</h2>
@@ -427,39 +472,8 @@
           </table>
         </div>
       </div>
-      <div class="panel">
-        <div class="panel-header">
-          <h2>Suppliers</h2>
-          <button class="btn btn-small" data-new-party="supplier">+ New supplier</button>
-        </div>
-        <div class="table-wrap">
-          <table class="table" id="suppliers-table">
-            <thead><tr><th>Name</th><th>Ccy</th><th>Bank details</th><th></th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
     </div>
 
-    <div class="panel" style="margin-top:16px;">
-      <h2>VAT codes</h2>
-      <p class="hint">Each VAT code has a rate and its own GL accounts: VAT on purchase invoices is booked to the input VAT account, VAT on sales invoices to the output VAT account. Choose the code on each invoice line. A code's rate can't change once it has been used: add a new code instead.</p>
-      <p class="error" id="vat-code-error"></p>
-      <div class="table-wrap">
-        <table class="table" id="vat-codes-table">
-          <thead><tr><th>Code</th><th>Description</th><th class="num">Rate</th><th>Input VAT account (purchases)</th><th>Output VAT account (sales)</th><th class="num">Invoice lines</th><th>Status</th><th class="admin-only"></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <form id="form-vat-code" class="upload-row admin-only" style="margin-top:12px;">
-        <label>Code <input name="code" required maxlength="12" size="8" placeholder="VAT5" /></label>
-        <label>Description <input name="description" required maxlength="60" placeholder="Reduced rate 5%" /></label>
-        <label>Rate % <input name="rate" type="number" min="0" max="100" step="any" required size="5" /></label>
-        <label>Input VAT account <select name="purchase_account"></select></label>
-        <label>Output VAT account <select name="sales_account"></select></label>
-        <button type="submit" class="btn btn-small">+ Add VAT code</button>
-      </form>
-    </div>
 
     <div class="panel" style="margin-top:16px;">
       <h2>Invoice recognition: what the app has learned</h2>

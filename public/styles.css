@@ -1,17 +1,21 @@
 :root {
-  --bg: #f5f6f8;
+  /* Blue theme: dark navy for the frame and headings, light blues for surfaces and highlights. */
+  --navy: #0b2545;
+  --navy-2: #13315c;
+  --bg: #eef4fb;
   --panel: #ffffff;
-  --border: #e2e5ea;
-  --text: #1c2129;
-  --muted: #667085;
-  --brand: #1f4b99;
-  --brand-dark: #163a78;
+  --border: #d3e0f0;
+  --text: #0f1e33;
+  --muted: #5b6b82;
+  --brand: #1d5fbf;
+  --brand-dark: #13315c;
+  --light-blue: #8db8ec;
   --green: #157a4a;
   --green-bg: #e6f5ec;
   --amber: #a35b00;
   --amber-bg: #fdf0dd;
-  --blue: #1f4b99;
-  --blue-bg: #e8eefb;
+  --blue: #1d5fbf;
+  --blue-bg: #e1ecfa;
   --red: #b3261e;
   --red-bg: #fbe9e7;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -415,3 +419,45 @@ dialog.with-preview .invoice-layout { grid-template-columns: minmax(320px, 1fr) 
 .notice-banner.ok { background: var(--green-bg); color: var(--green); border-bottom: 1px solid #bbe5cc; }
 .notice-banner.bad { background: var(--red-bg); color: var(--red); border-bottom: 1px solid #f5c2bd; }
 .role-viewer #btn-upload-invoice { display: none !important; }
+
+
+/* ---------- Blue theme ---------- */
+body { background: linear-gradient(180deg, #e3edf9 0, var(--bg) 260px) no-repeat, var(--bg); }
+.topbar { background: linear-gradient(90deg, var(--navy) 0%, var(--navy-2) 60%, #1b4a86 100%); border-bottom: 3px solid var(--light-blue); box-shadow: 0 2px 10px rgba(11, 37, 69, .25); }
+.brand-mark { background: var(--light-blue); color: var(--navy); }
+.brand-name { color: #fff; }
+.brand-sub, .brand-sub strong { color: #b9d1f0; }
+.tabs .tab { color: #c9dcf5; }
+.tabs .tab:hover { background: rgba(141, 184, 236, .18); color: #fff; }
+.tabs .tab.active { background: var(--light-blue); color: var(--navy); }
+.entity-picker { color: #b9d1f0; }
+.entity-picker select { background: rgba(255, 255, 255, .12); color: #fff; border-color: rgba(141, 184, 236, .5); }
+.entity-picker select option { color: var(--text); background: #fff; }
+.user-menu .user-name { color: #fff; }
+.user-menu .btn { background: rgba(255, 255, 255, .1); color: #fff; border-color: rgba(141, 184, 236, .45); }
+.user-menu .btn:hover { background: rgba(255, 255, 255, .2); }
+
+/* "Other" dropdown */
+.tab-more { position: relative; }
+.tab-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 190px; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(11, 37, 69, .22); padding: 6px; display: flex; flex-direction: column; }
+.tab-menu[hidden] { display: none; }
+.tabs .tab-menu .tab { color: var(--text); text-align: left; border-radius: 7px; padding: 8px 12px; }
+.tabs .tab-menu .tab:hover { background: var(--blue-bg); color: var(--brand-dark); }
+.tabs .tab-menu .tab.active { background: var(--blue-bg); color: var(--brand); }
+
+/* Surfaces */
+.panel, .card { border-color: var(--border); box-shadow: 0 1px 2px rgba(11, 37, 69, .05); }
+.card { border-top: 3px solid var(--light-blue); }
+.panel h2, .panel-header h2, .card .value { color: var(--navy); }
+table.table th { background: #f1f6fd; color: #3f5a80; border-bottom-color: var(--border); }
+table.table tbody tr:hover { background: #f5f9ff; }
+.btn-primary { background: var(--brand); border-color: var(--brand); }
+.btn-primary:hover { background: var(--navy-2); border-color: var(--navy-2); }
+.btn { border-color: var(--border); }
+.btn:hover { background: var(--blue-bg); }
+.login-screen { background: linear-gradient(160deg, var(--navy) 0%, var(--navy-2) 55%, #2f6fbf 100%); }
+.login-card { border-top: 4px solid var(--light-blue); }
+.tb-status.ok { background: var(--green-bg); }
+table.fin tr.grand td { background: var(--blue-bg); }
+.login-card .brand-name { color: var(--navy); }
+.login-card .brand-sub { color: var(--muted); }

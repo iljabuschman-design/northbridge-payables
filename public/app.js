@@ -225,6 +225,7 @@ async function autoRate(currency, date, input, hintEl) {
 // ---------- Tabs ----------
 
 const LOADERS = {
+  suppliers: loadSuppliersPage,
   dashboard: loadDashboard,
   kpis: loadKpis,
   assets: loadAssets,
@@ -234,7 +235,11 @@ const LOADERS = {
   journals: loadJournals,
   ledger: loadLedger,
   financials: loadFinancials,
-  vat: loadVat,
+  vat: async () => {
+    await loadVat();
+    await loadVatCodes();
+    renderVatCodes();
+  },
   setup: loadSetup,
 };
 
@@ -248,9 +253,15 @@ function showTab(name) {
     loadAccountView(code).catch((err) => console.error(err));
     return;
   }
-  if (!document.getElementById(`view-${name}`)) name = 'dashboard';
+  if (!document.getElementById(`view-${name}`)) name = 'suppliers';
   if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab[data-tab]').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  // The "Other" button shows which of its pages is open.
+  const inOther = document.querySelector(`#tab-menu [data-tab="${name}"]`);
+  const other = document.getElementById('tab-other');
+  other.classList.toggle('active', Boolean(inOther));
+  other.textContent = inOther ? `Other: ${inOther.textContent} ▾` : 'Other ▾';
+  closeOtherMenu();
   document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== `view-${name}`));
   if (LOADERS[name])
     LOADERS[name]().catch((err) => {
@@ -260,18 +271,36 @@ function showTab(name) {
 }
 
 // Account links are plain #account/<code> links; following one closes any open dialog.
-window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'dashboard'));
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'suppliers'));
 document.addEventListener('click', (e) => {
   if (e.target.closest('.acct-link')) document.querySelectorAll('dialog[open]').forEach((d) => d.close());
 });
 
 document.getElementById('tabs').addEventListener('click', (e) => {
-  const btn = e.target.closest('.tab');
+  const btn = e.target.closest('.tab[data-tab]');
   if (btn) showTab(btn.dataset.tab);
 });
 
+// "Other" dropdown with the pages that aren't in the main menu.
+function closeOtherMenu() {
+  document.getElementById('tab-menu').hidden = true;
+  document.getElementById('tab-other').setAttribute('aria-expanded', 'false');
+}
+document.getElementById('tab-other').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const menu = document.getElementById('tab-menu');
+  menu.hidden = !menu.hidden;
+  document.getElementById('tab-other').setAttribute('aria-expanded', String(!menu.hidden));
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#tab-more')) closeOtherMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeOtherMenu();
+});
+
 function refreshActive() {
-  showTab(location.hash.slice(1) || 'dashboard');
+  showTab(location.hash.slice(1) || 'suppliers');
 }
 
 // ---------- Dashboard ----------
@@ -1399,11 +1428,6 @@ async function loadSetup() {
     (p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
       <td><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button></td></tr>`
   ).join('');
-  document.querySelector('#suppliers-table tbody').innerHTML = SUPPLIERS.map(
-    (p) => `<tr><td>${esc(p.name)}<div class="muted">${esc(p.country || '')}</div></td><td>${p.currency}</td>
-      <td class="muted">${esc(bankDetailsText(p) || 'none')}</td>
-      <td><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button></td></tr>`
-  ).join('');
   document.querySelectorAll('[data-edit-party]').forEach((btn) =>
     btn.addEventListener('click', () => {
       const kind = btn.dataset.editParty;
@@ -1414,8 +1438,6 @@ async function loadSetup() {
   await Promise.all([loadCostCenters(), loadPeriods()]);
   renderCostCenterList();
   renderPeriods();
-  await loadVatCodes();
-  renderVatCodes();
   await loadRecognitionProfiles();
   if (isAdmin()) await loadUsers();
 
@@ -1534,8 +1556,9 @@ partyForm.addEventListener('submit', async (e) => {
   try {
     if (editingParty) await post(`${base}/${editingParty.id}`, payload, 'PUT');
     else await post(base, payload);
+    // Edits can come from Setup (customers) or the Suppliers page: reload whichever is open.
     document.getElementById('dialog-party').close();
-    loadSetup();
+    refreshActive();
   } catch (err) {
     document.getElementById('party-error').textContent = err.message;
   }
@@ -2735,6 +2758,47 @@ async function loadRecognitionProfiles() {
   );
 }
 
+// ---------- Suppliers page ----------
+
+async function loadSuppliersPage() {
+  const [invoices, profiles] = await Promise.all([api('/api/invoices?type=purchase'), api('/api/recognition/profiles'), loadParties()]);
+  const learned = Object.fromEntries(profiles.map((p) => [p.supplier_id, p]));
+  const stats = {};
+  for (const i of invoices) {
+    const s = (stats[i.party_id] ||= { count: 0, open: 0, outstanding: 0 });
+    s.count += 1;
+    if (i.status !== 'Paid') {
+      s.open += 1;
+      s.outstanding += i.remaining_base;
+    }
+  }
+  const totalOutstanding = Object.values(stats).reduce((t, s) => t + s.outstanding, 0);
+  const openCount = Object.values(stats).reduce((t, s) => t + s.open, 0);
+  document.getElementById('supplier-cards').innerHTML = `
+    <div class="card"><div class="label">Suppliers</div><div class="value">${SUPPLIERS.length}</div><div class="sub">${Object.keys(stats).length} with invoices</div></div>
+    <div class="card"><div class="label">Open invoices</div><div class="value">${openCount}</div><div class="sub">not (fully) paid</div></div>
+    <div class="card"><div class="label">Outstanding</div><div class="value">${fmt(totalOutstanding, BASE)}</div><div class="sub">at booked rates</div></div>
+    <div class="card"><div class="label">Recognition learned</div><div class="value">${profiles.length}</div><div class="sub">supplier(s) with a learned profile</div></div>`;
+  document.querySelector('#suppliers-table tbody').innerHTML = SUPPLIERS.map((p) => {
+    const s = stats[p.id] || { count: 0, open: 0, outstanding: 0 };
+    const l = learned[p.id];
+    return `<tr>
+      <td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.country || '')}</div></td>
+      <td>${p.currency}</td>
+      <td class="muted">${esc(p.vat_number || '')}</td>
+      <td class="muted">${esc(bankDetailsText(p) || 'none')}</td>
+      <td class="num">${s.count}</td>
+      <td class="num">${s.open ? `<span class="badge open">${s.open}</span>` : '0'}</td>
+      <td class="num">${fmt(s.outstanding, BASE)}</td>
+      <td class="muted">${l ? `${l.documents} invoice(s)${l.accuracy !== null ? `, ${Math.round(l.accuracy * 100)}% right` : ''}` : '-'}</td>
+      <td><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button></td>
+    </tr>`;
+  }).join('');
+  document.querySelectorAll('#suppliers-table [data-edit-party]').forEach((btn) =>
+    btn.addEventListener('click', () => openPartyDialog('supplier', SUPPLIERS.find((x) => x.id === Number(btn.dataset.id))))
+  );
+}
+
 // ---------- Setup: VAT codes ----------
 
 function renderVatCodes() {
@@ -3004,7 +3068,7 @@ async function finishStart() {
     refreshActive();
   });
   await Promise.all([loadAccounts(), loadCostCenters(), loadPeriods()]);
-  showTab(location.hash.slice(1) || 'dashboard');
+  showTab(location.hash.slice(1) || 'suppliers');
 }
 
 startApp();
