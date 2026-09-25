@@ -412,11 +412,31 @@ function ledgerTable(entries, openable = false) {
   </table></div>`;
 }
 
+/**
+ * Edit buttons on entries (ledger, account overview, journals): open the
+ * journal's editor directly - the full editor for manual/opening journals,
+ * the reclassify editor for the others, or the journal (with the reason) if
+ * its period is closed.
+ */
+async function editJournalById(id) {
+  const j = await api(`/api/journals/${id}`);
+  if (j.edit_mode === 'full') openJournalForm(j);
+  else if (j.edit_mode === 'reclassify') openReclassDialog(j);
+  else openJournalDetail(id);
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-edit-journal]');
+  if (!btn) return;
+  e.stopPropagation();
+  document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+  editJournalById(Number(btn.dataset.editJournal)).catch((err) => console.error(err));
+}, true);
+
 /** Wire up clickable journal lines rendered by ledgerTable(…, true). */
 function bindJournalRows(root) {
   root.querySelectorAll('tr[data-journal]').forEach((tr) =>
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('a')) return;
+      if (e.target.closest('a, button')) return;
       openJournalDetail(Number(tr.dataset.journal));
     })
   );
@@ -851,7 +871,8 @@ async function loadJournals() {
       (j) => `<tr class="clickable" data-id="${j.id}">
         <td>${esc(j.journal_date)}</td><td>${esc(j.period)}</td><td><span class="entity-tag">${esc(j.entity_code)}</span></td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}${j.edit_count ? ' <span class="badge edited">Edited</span>' : ''}</td>
         <td><span class="badge src-${esc(j.source_type)}">${esc(SOURCE_LABEL[j.source_type] || j.source_type)}</span></td>
-        <td class="num">${j.line_count}</td><td class="num">${fmt(j.total, BASE)}</td></tr>`
+        <td class="num">${j.line_count}</td><td class="num">${fmt(j.total, BASE)}</td>
+        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${j.id}">Edit</button></td></tr>`
     )
     .join('');
   tbody.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openJournalDetail(Number(tr.dataset.id))));
@@ -1022,7 +1043,8 @@ async function loadLedger() {
       (e) => `<tr class="clickable" data-journal="${e.journal_id}">
         <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
-        <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
+        <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td>
+        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
     )
     .join('');
   bindJournalRows(document.getElementById('ledger-table'));
@@ -2225,9 +2247,9 @@ async function loadAccountView(code) {
     : '<tbody><tr><td class="hint">Cost centres are only used on P&amp;L accounts.</td></tr></tbody>';
 
   const table = document.getElementById('account-entries');
-  table.innerHTML = `<thead><tr><th>Date</th><th>Entity</th><th>Journal</th><th>Description</th><th>Cost centre</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+  table.innerHTML = `<thead><tr><th>Date</th><th>Entity</th><th>Journal</th><th>Description</th><th>Cost centre</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th><th></th></tr></thead>
     <tbody>
-      <tr class="total"><td colspan="7">${isPl ? 'Before the period' : 'Opening balance'}</td><td class="num">${nat(d.opening)}</td></tr>
+      <tr class="total"><td colspan="7">${isPl ? 'Before the period' : 'Opening balance'}</td><td class="num">${nat(d.opening)}</td><td></td></tr>
       ${d.entries
         .map(
           (e) => `<tr class="clickable" data-journal="${e.journal_id}">
@@ -2235,10 +2257,11 @@ async function loadAccountView(code) {
             <td>${esc(e.reference || '')} <span class="badge src-${esc(e.source_type)}">${esc(SOURCE_LABEL[e.source_type] || e.source_type)}</span></td>
             <td>${esc(e.description)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td>
             <td>${esc(ccName(e.cost_center))}</td>
-            <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td><td class="num">${nat(e.balance)}</td></tr>`
+            <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td><td class="num">${nat(e.balance)}</td>
+            <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
         )
         .join('')}
-      <tr class="total"><td colspan="5">${isPl ? 'Cumulative at' : 'Closing balance at'} ${esc(d.to)}</td><td class="num">${fmt(d.debit)}</td><td class="num">${fmt(d.credit)}</td><td class="num">${nat(d.closing)}</td></tr>
+      <tr class="total"><td colspan="5">${isPl ? 'Cumulative at' : 'Closing balance at'} ${esc(d.to)}</td><td class="num">${fmt(d.debit)}</td><td class="num">${fmt(d.credit)}</td><td class="num">${nat(d.closing)}</td><td></td></tr>
     </tbody>`;
   bindJournalRows(table);
 }
