@@ -46,6 +46,7 @@
       <button class="tab" data-tab="ledger">Ledger</button>
       <button class="tab" data-tab="assets">Fixed assets</button>
       <button class="tab" data-tab="financials">Financials</button>
+      <button class="tab" data-tab="vat">VAT</button>
       <button class="tab" data-tab="setup">Setup</button>
       <button class="tab" data-tab="assumptions">Assumptions</button>
     </nav>
@@ -319,6 +320,47 @@
     </div>
   </section>
 
+  <!-- VAT returns -->
+  <section id="view-vat" class="view" hidden>
+    <div class="panel">
+      <div class="panel-header wrap">
+        <h2>VAT return (HMRC)</h2>
+        <form id="form-vat-period" class="period-row period-form">
+          <label>From <select name="from"></select></label>
+          <label>To <select name="to"></select></label>
+          <button type="submit" class="btn">Calculate</button>
+        </form>
+      </div>
+      <p class="hint">The nine boxes of the UK VAT return, worked out from the invoices dated in the period at their booked GBP rates. Each entity files its own return.</p>
+      <p class="error" id="vat-error"></p>
+      <div id="vat-result"></div>
+    </div>
+
+    <div class="panel admin-only" id="vat-file-panel" style="margin-top:16px;" hidden>
+      <h2>File this return</h2>
+      <form id="form-vat-file" class="form">
+        <div class="row">
+          <label>VAT registration number <input name="vrn" required maxlength="14" placeholder="123456789" /></label>
+          <label>HMRC period key <input name="period_key" required maxlength="4" size="6" placeholder="26A2" /></label>
+        </div>
+        <p class="hint">The period key is shown next to the period in the business tax account (VAT obligations).</p>
+        <label class="check"><input type="checkbox" name="declaration" required /> When I submit this VAT information I am making a legal declaration that the information is true and complete. A false declaration can result in prosecution.</label>
+        <p class="error" id="vat-file-error"></p>
+        <div class="dialog-actions"><button type="submit" class="btn btn-primary">File return</button></div>
+      </form>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Filed returns</h2>
+      <div class="table-wrap">
+        <table class="table" id="vat-returns-table">
+          <thead><tr><th>Entity</th><th>Period</th><th>Period key</th><th>VAT number</th><th class="num">Net VAT</th><th>Due</th><th>Filed</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <!-- Setup -->
   <section id="view-setup" class="view" hidden>
     <div class="panel">
@@ -468,7 +510,8 @@
       <p>The Pay button opens a <strong>simulated</strong> bank payment window: choose the account to pay from and your bank, "log in" and approve. No real bank is contacted and no money moves; approving books the payment on the invoice as if the bank executed it today. When paying from an account in another currency, the bank converts at today's ECB rate and the difference with the invoice's booked rate is a realised FX gain or loss. Real payments would need an FCA-authorised Open Banking payment initiation provider (e.g. TrueLayer or Yapily), which can later replace the simulated bank behind the same button. A payment made this way would also appear on the next real bank statement; that statement line is then already settled and should be posted against accounts payable or left out.</p>
 
       <h3>VAT</h3>
-      <p>Input VAT is posted to VAT recoverable and output VAT to VAT payable. No VAT return, partial exemption or reverse-charge mechanics are modelled; overseas invoices in the demo data use 0% VAT.</p>
+      <p>Input VAT is posted to VAT recoverable and output VAT to VAT payable. No partial exemption or reverse-charge mechanics are modelled; overseas invoices in the demo data use 0% VAT.</p>
+      <p>The <strong>VAT</strong> tab works out the nine-box VAT return per entity on the accrual basis: box 1 is the output VAT and box 4 the input VAT on the invoices dated in the period, boxes 6 and 7 their net values in whole pounds, all in GBP at the invoices' booked rates. Boxes 2, 8 and 9 (EU goods) only apply in Northern Ireland and are 0. VAT booked on the VAT ledgers by manual journals is not included; the tab shows any such difference. Filing stores the figures and produces the request body for HMRC's Making Tax Digital API. Sending it to HMRC directly needs the app to be registered as MTD software with HMRC (Government Gateway sign-in and fraud prevention headers), which this demo is not.</p>
 
       <h3>Persistence</h3>
       <p>The online version stores everything in a <strong>Postgres</strong> database (Neon, London), so data is kept and every visitor sees the same books. When run locally the app uses a SQLite file instead; the same queries work on both. Tables and demo data are created automatically the first time the app starts on an empty database.</p>

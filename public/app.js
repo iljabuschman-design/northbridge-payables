@@ -215,6 +215,7 @@ const LOADERS = {
   journals: loadJournals,
   ledger: loadLedger,
   financials: loadFinancials,
+  vat: loadVat,
   setup: loadSetup,
 };
 
@@ -1169,6 +1170,147 @@ async function loadFinancials() {
   const cfCheck = document.getElementById('cf-check');
   cfCheck.textContent = cf.reconciles ? '✓ Opening cash plus net change equals closing cash.' : '✗ Cash flow does not reconcile.';
   cfCheck.className = 'hint ' + (cf.reconciles ? 'pos' : 'neg');
+}
+
+// ---------- VAT returns (HMRC) ----------
+
+const VAT_BOXES = [
+  ['vat_due_sales', 1, 'VAT due on sales and other outputs'],
+  ['vat_due_acquisitions', 2, 'VAT due on acquisitions of goods from EU member states (NI only)'],
+  ['total_vat_due', 3, 'Total VAT due (box 1 + box 2)'],
+  ['vat_reclaimed', 4, 'VAT reclaimed on purchases and other inputs'],
+  ['net_vat_due', 5, 'Net VAT to pay to HMRC or reclaim'],
+  ['total_sales_ex_vat', 6, 'Total value of sales and other outputs, excluding VAT'],
+  ['total_purchases_ex_vat', 7, 'Total value of purchases and other inputs, excluding VAT'],
+  ['total_goods_supplied_ex_vat', 8, 'Total value of goods supplied to EU member states, excluding VAT (NI only)'],
+  ['total_acquisitions_ex_vat', 9, 'Total value of goods acquired from EU member states, excluding VAT (NI only)'],
+];
+
+const vatForm = document.getElementById('form-vat-period');
+const vatFileForm = document.getElementById('form-vat-file');
+let vatCalc = null;
+
+vatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  calculateVat();
+});
+
+/** Default period: the three months up to the last completed month. */
+function fillVatPeriods() {
+  const firstTime = !vatForm.to.value;
+  fillPeriodSelects(vatForm);
+  if (!firstTime) return;
+  const periods = [...PERIODS].map((p) => p.period).sort();
+  const last = periods.filter((p) => p < currentPeriod()).pop() || periods[periods.length - 1];
+  vatForm.from.value = periods[Math.max(0, periods.indexOf(last) - 2)];
+  vatForm.to.value = last;
+}
+
+async function loadVat() {
+  await loadPeriods();
+  fillVatPeriods();
+  await Promise.all([calculateVat(), loadVatReturns()]);
+}
+
+async function calculateVat() {
+  const out = document.getElementById('vat-result');
+  const err = document.getElementById('vat-error');
+  const filePanel = document.getElementById('vat-file-panel');
+  err.textContent = '';
+  vatCalc = null;
+  filePanel.hidden = true;
+  if (!CURRENT_ENTITY) {
+    out.innerHTML = '<p class="hint">Choose an entity in the top bar: each entity files its own VAT return.</p>';
+    return;
+  }
+  const { from, to } = periodRange(vatForm);
+  try {
+    vatCalc = await api(`/api/vat/calculate?from=${from}&to=${to}`);
+  } catch (e) {
+    out.innerHTML = '';
+    err.textContent = e.message;
+    return;
+  }
+  const c = vatCalc;
+  const b = c.boxes;
+  const money = (key) => (key.startsWith('total_') && key !== 'total_vat_due' ? fmt(b[key], BASE).replace(/\.\d\d$/, '') : fmt(b[key], BASE));
+  const check = (label, x) =>
+    x.difference
+      ? `<p class="hint neg">✗ ${label}: ledger ${acctLink(x.code, '')} moved ${fmt(x.amount, BASE)} in the period, ${fmt(Math.abs(x.difference), BASE)} ${x.difference > 0 ? 'more' : 'less'} than on the invoices. VAT booked by journals is not in the return; check it before filing.</p>`
+      : `<p class="hint pos">✓ ${label} agrees with ledger ${acctLink(x.code, '')}.</p>`;
+  out.innerHTML = `
+    <p class="hint">${esc(c.entity.name)} · ${esc(c.from)} to ${esc(c.to)} · ${c.sales_invoices} sales and ${c.purchase_invoices} purchase invoice(s) · due by <strong>${esc(c.due_date)}</strong></p>
+    <div class="table-wrap"><table class="table fin">
+      <tbody>${VAT_BOXES.map(
+        ([key, n, label]) => `<tr class="${n === 5 ? 'grand' : n === 3 ? 'sub' : 'cat'}"><td>Box ${n}</td><td>${esc(label)}</td><td class="num">${money(key)}</td></tr>`
+      ).join('')}</tbody>
+    </table></div>
+    <p><strong>${b.net_vat_due === 0 ? 'Nothing to pay or reclaim.' : c.to_pay ? `${fmt(b.net_vat_due, BASE)} to pay to HMRC.` : `${fmt(b.net_vat_due, BASE)} to reclaim from HMRC.`}</strong></p>
+    ${check('Output VAT (box 1)', c.ledger_check.output)}
+    ${check('Input VAT (box 4)', c.ledger_check.input)}`;
+  filePanel.hidden = false;
+  document.getElementById('vat-file-error').textContent = '';
+}
+
+vatFileForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('vat-file-error');
+  errEl.textContent = '';
+  if (!vatCalc) return;
+  try {
+    const r = await post('/api/vat/returns', {
+      entity_id: vatCalc.entity.id,
+      from: vatCalc.from,
+      to: vatCalc.to,
+      vrn: vatFileForm.vrn.value,
+      period_key: vatFileForm.period_key.value,
+      declaration: vatFileForm.declaration.checked,
+    });
+    vatFileForm.period_key.value = '';
+    vatFileForm.declaration.checked = false;
+    await loadVatReturns();
+    await downloadVatReturn(r.id);
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+async function loadVatReturns() {
+  const rows = await api('/api/vat/returns');
+  // Suggest the VAT number used last time for this entity.
+  const last = rows.find((r) => String(r.entity_id) === String(CURRENT_ENTITY));
+  if (last && !vatFileForm.vrn.value) vatFileForm.vrn.value = last.vrn;
+  const tbody = document.querySelector('#vat-returns-table tbody');
+  tbody.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `<tr>
+        <td>${esc(r.entity_code)}</td>
+        <td>${esc(r.period_start)} to ${esc(r.period_end)}${r.changed_since_filing ? ' <span class="badge open" title="The books for this period have changed since it was filed">changed since filing</span>' : ''}</td>
+        <td>${esc(r.period_key)}</td>
+        <td>GB ${esc(r.vrn)}</td>
+        <td class="num">${r.total_vat_due >= r.vat_reclaimed ? '' : '-'}${fmt(r.net_vat_due, BASE)}</td>
+        <td>${esc(r.due_date)}</td>
+        <td>${esc(String(r.filed_at).slice(0, 16))}${r.filed_by ? ` · ${esc(r.filed_by)}` : ''}</td>
+        <td><button type="button" class="btn btn-small" data-vat-download="${r.id}">Download MTD file</button></td>
+      </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="8" class="muted">No VAT returns filed yet.</td></tr>';
+  tbody.querySelectorAll('[data-vat-download]').forEach((btn) => btn.addEventListener('click', () => downloadVatReturn(btn.dataset.vatDownload)));
+}
+
+/** Save the Making Tax Digital request body as a .json file. */
+async function downloadVatReturn(id) {
+  const r = await api(`/api/vat/returns/${id}/mtd`);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(r.body, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = r.filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ---------- Setup: chart of accounts, customers, suppliers, FX ----------
@@ -2336,13 +2478,30 @@ document.getElementById('form-login').addEventListener('submit', async (e) => {
   const f = e.target;
   const errEl = document.getElementById('login-error');
   errEl.textContent = '';
+  const button = f.querySelector('button[type=submit]');
+  button.disabled = true;
   try {
     await post('/api/login', { username: f.username.value.trim(), password: f.password.value });
-    location.reload();
   } catch (err) {
     errEl.textContent = err.message;
     f.password.value = '';
+    f.password.focus();
+    button.disabled = false;
+    return;
   }
+  // Check the browser kept the login cookie before continuing.
+  const me = await fetch('/api/me', { cache: 'no-store' });
+  if (!me.ok) {
+    errEl.textContent =
+      'Your password was accepted, but this browser did not keep the login. Please allow cookies for this site (or leave private/incognito mode) and try again.';
+    button.disabled = false;
+    return;
+  }
+  document.getElementById('login-screen').hidden = true;
+  document.body.classList.remove('logged-out');
+  f.reset();
+  button.disabled = false;
+  startApp();
 });
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
@@ -2456,7 +2615,8 @@ document.getElementById('form-user').addEventListener('submit', async (e) => {
   }
 });
 
-(async function init() {
+/** Load the logged-in user and start the app (on page load, or right after logging in). */
+async function startApp() {
   try {
     CURRENT_USER = await api('/api/me');
   } catch {
@@ -2491,4 +2651,6 @@ document.getElementById('form-user').addEventListener('submit', async (e) => {
   });
   await Promise.all([loadAccounts(), loadCostCenters(), loadPeriods()]);
   showTab(location.hash.slice(1) || 'dashboard');
-})();
+}
+
+startApp();

@@ -9,6 +9,7 @@ const fx = require('./fx');
 const bank = require('./bank');
 const assets = require('./assets');
 const auth = require('./auth');
+const vat = require('./vat');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
 
@@ -37,6 +38,8 @@ function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
+    // Answers depend on who is logged in: never let a browser or proxy reuse one.
+    'Cache-Control': 'no-store',
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
@@ -238,6 +241,12 @@ const routes = [
     handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }),
   },
   { method: 'GET', pattern: /^\/api\/kpis$/, handler: async (req, m, q) => acct.kpis({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }) },
+
+  // VAT returns (HMRC, Making Tax Digital format)
+  { method: 'GET', pattern: /^\/api\/vat\/calculate$/, handler: async (req, m, q) => vat.calculate({ entity_id: q.get('entity'), from: q.get('from'), to: q.get('to') }) },
+  { method: 'GET', pattern: /^\/api\/vat\/returns$/, handler: async (req, m, q) => vat.listReturns(q.get('entity')) },
+  { method: 'POST', pattern: /^\/api\/vat\/returns$/, handler: json((body, m, q, req) => vat.fileReturn(body, req.user.name)) },
+  { method: 'GET', pattern: /^\/api\/vat\/returns\/(\d+)\/mtd$/, handler: async (req, m) => vat.mtdExport(m[1]) },
 
   // Exchange rates (ECB)
   {

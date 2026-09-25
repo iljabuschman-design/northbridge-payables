@@ -248,6 +248,28 @@ CREATE TABLE IF NOT EXISTS asset_depreciation (
   UNIQUE (asset_id, period)
 );
 
+-- Filed VAT returns: the nine boxes as filed (see vat.js), in GBP.
+CREATE TABLE IF NOT EXISTS vat_returns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
+  vrn TEXT NOT NULL,
+  period_key TEXT NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  vat_due_sales REAL NOT NULL,
+  vat_due_acquisitions REAL NOT NULL,
+  total_vat_due REAL NOT NULL,
+  vat_reclaimed REAL NOT NULL,
+  net_vat_due REAL NOT NULL,
+  total_sales_ex_vat REAL NOT NULL,
+  total_purchases_ex_vat REAL NOT NULL,
+  total_goods_supplied_ex_vat REAL NOT NULL,
+  total_acquisitions_ex_vat REAL NOT NULL,
+  filed_by TEXT,
+  filed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (vrn, period_key)
+);
+
 -- Login users: admin (everything) or viewer (read-only). Passwords are scrypt hashes.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -287,7 +309,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();
