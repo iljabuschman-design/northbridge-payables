@@ -30,7 +30,7 @@ dummy customers, suppliers and transactions.
   overheads, financial income/expenses), balance sheet (opening vs closing)
   and an indirect-method cash flow statement, for any period.
 - Full double-entry ledger and live trial balance; everything persisted
-  server-side in SQLite.
+  server-side in Postgres (online, Neon) or SQLite (locally).
 
 See the in-app Assumptions tab for the accounting/VAT/FX assumptions made.
 
@@ -70,3 +70,13 @@ HTML/CSS/JS frontend - no build step, no framework, no external
 dependencies at all, to keep the app easy to read, run and deploy anywhere
 that runs a recent Node.js.
 
+
+## Database & hosting
+
+Online the app runs on Vercel (https://northbridge-payables.vercel.app) with a
+Neon Postgres database: when `DATABASE_URL` (or `POSTGRES_URL`) is set, db.js
+uses Postgres; otherwise a local SQLite file in ./data. The code writes one SQL
+dialect ("?" placeholders, Postgres-style "::type" casts that are stripped for
+SQLite). Tables are created on start-up and demo data is seeded into an empty
+database. Vercel functions run in London (lhr1) next to the database
+(eu-west-2); every push to main deploys automatically.

@@ -431,7 +431,7 @@
       <p>Input VAT is posted to VAT recoverable and output VAT to VAT payable. No VAT return, partial exemption or reverse-charge mechanics are modelled; overseas invoices in the demo data use 0% VAT.</p>
 
       <h3>Persistence</h3>
-      <p>All data is stored server-side in a SQLite database file, so it survives page refreshes and is visible from any browser hitting this URL.</p>
+      <p>The online version stores everything in a <strong>Postgres</strong> database (Neon, London), so data is kept and every visitor sees the same books. When run locally the app uses a SQLite file instead; the same queries work on both. Tables and demo data are created automatically the first time the app starts on an empty database.</p>
     </div>
   </section>
 

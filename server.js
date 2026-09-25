@@ -9,10 +9,17 @@ const fx = require('./fx');
 const bank = require('./bank');
 const assets = require('./assets');
 const { seedIfEmpty } = require('./seed');
+const { init, db } = require('./db');
 
-seedIfEmpty();
-fx.startScheduler();
-assets.startScheduler();
+// Create the tables and demo data (first start only), then start the background jobs.
+// Requests wait for this; on Vercel it runs once per function instance.
+const ready = init()
+  .then(seedIfEmpty)
+  .then(() => {
+    fx.startScheduler();
+    assets.startScheduler();
+  });
+ready.catch((err) => console.error('Start-up failed:', err));
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -84,13 +91,14 @@ const routes = [
     method: 'GET',
     pattern: /^\/api\/meta$/,
     handler: async () => ({
-      company: acct.getCompany(),
+      company: await acct.getCompany(),
       currencies: acct.CURRENCIES,
       categories: acct.CATEGORIES,
       asset_types: Object.entries(assets.ASSET_TYPES).map(([key, t]) => ({ key, name: t.name })),
-      entities: acct.listEntities(),
-      // On Vercel the database lives in temporary storage and is reset regularly.
-      demo_mode: Boolean(process.env.VERCEL),
+      entities: await acct.listEntities(),
+      database: db.kind,
+      // Only the temporary SQLite database on Vercel resets; Postgres keeps everything.
+      demo_mode: Boolean(process.env.VERCEL) && db.kind === 'sqlite',
     }),
   },
   { method: 'GET', pattern: /^\/api\/entities$/, handler: async () => acct.listEntities() },
@@ -106,13 +114,13 @@ const routes = [
   { method: 'POST', pattern: /^\/api\/periods\/(\d{4}-\d{2})\/reopen$/, handler: async (req, m) => acct.setPeriodStatus(m[1], 'open') },
 
   // Fixed assets
-  { method: 'GET', pattern: /^\/api\/assets$/, handler: async (req, m, q) => ({ assets: assets.listAssets(q.get('entity')), depreciation: assets.getStatus() }) },
+  { method: 'GET', pattern: /^\/api\/assets$/, handler: async (req, m, q) => ({ assets: await assets.listAssets(q.get('entity')), depreciation: assets.getStatus() }) },
   { method: 'POST', pattern: /^\/api\/assets$/, handler: json((body) => assets.createAsset(body)) },
   {
     method: 'GET',
     pattern: /^\/api\/assets\/(\d+)$/,
     handler: async (req, m) => {
-      const a = assets.getAsset(Number(m[1]));
+      const a = await assets.getAsset(Number(m[1]));
       if (!a) throw acct.httpError(404, 'Asset not found');
       return a;
     },
@@ -145,7 +153,7 @@ const routes = [
     method: 'GET',
     pattern: /^\/api\/invoices\/(\d+)$/,
     handler: async (req, m) => {
-      const detail = acct.invoiceDetail(Number(m[1]));
+      const detail = await acct.invoiceDetail(Number(m[1]));
       if (!detail) throw acct.httpError(404, 'Invoice not found');
       return detail;
     },
@@ -169,7 +177,7 @@ const routes = [
     method: 'GET',
     pattern: /^\/api\/journals\/(\d+)$/,
     handler: async (req, m) => {
-      const j = acct.getJournal(Number(m[1]));
+      const j = await acct.getJournal(Number(m[1]));
       if (!j) throw acct.httpError(404, 'Journal not found');
       return j;
     },
@@ -204,13 +212,13 @@ const routes = [
       return rate;
     },
   },
-  { method: 'GET', pattern: /^\/api\/fx\/status$/, handler: async () => ({ latest: fx.latestRates(), ...fx.getStatus() }) },
+  { method: 'GET', pattern: /^\/api\/fx\/status$/, handler: async () => ({ latest: await fx.latestRates(), ...(await fx.getStatus()) }) },
   {
     method: 'POST',
     pattern: /^\/api\/fx\/refresh$/,
     handler: async () => {
       await fx.updateLatest();
-      return { latest: fx.latestRates(), ...fx.getStatus() };
+      return { latest: await fx.latestRates(), ...(await fx.getStatus()) };
     },
   },
 
@@ -226,7 +234,7 @@ const routes = [
     method: 'GET',
     pattern: /^\/api\/bank\/statements\/(\d+)$/,
     handler: async (req, m) => {
-      const s = bank.getStatement(Number(m[1]));
+      const s = await bank.getStatement(Number(m[1]));
       if (!s) throw acct.httpError(404, 'Statement not found');
       return s;
     },
@@ -235,8 +243,25 @@ const routes = [
 ];
 
 /** Request handler: a plain Node server locally/Render, a serverless function on Vercel (api/index.js). */
+/** Database connectivity check; answers even while start-up (seeding) is still running. */
+async function health() {
+  const t = Date.now();
+  await db.get('SELECT 1 AS ok');
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+  const dbRegion = (url.match(/\.([a-z]+-[a-z]+-\d)\.aws\.neon\.tech/) || [])[1] || null;
+  return { database: db.kind, query_ms: Date.now() - t, function_region: process.env.VERCEL_REGION || null, database_region: dbRegion };
+}
+
 async function handler(req, res) {
   const parsed = new URL(req.url, 'http://localhost');
+  if (parsed.pathname === '/api/health') {
+    try {
+      return sendJson(res, 200, await health());
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+  await ready;
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith('/api/')) {

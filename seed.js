@@ -66,20 +66,25 @@ const OPENING_ASSETS = [
   { name: 'Meeting room AV equipment', description: 'Screen, camera and speaker system', asset_type: 'inventory', cost_center: '300', acquisition_date: '2025-10-01', acquisition_cost: 5300, depreciation_rate: 20 },
 ];
 
-function seedIfEmpty() {
-  const existing = db.prepare('SELECT COUNT(*) AS c FROM company').get().c;
+async function seedIfEmpty() {
+  const existing = (await db.get('SELECT COUNT(*) AS c FROM company')).c;
   if (existing > 0) return; // already seeded
-  transaction(seed);
+  await transaction(async () => {
+    // Several function instances can start at once: one seeds, the others wait and then see the data.
+    await db.lock(424242);
+    if ((await db.get('SELECT COUNT(*) AS c FROM company')).c > 0) return;
+    await seed();
+  });
 }
 
-function seed() {
-  db.prepare('INSERT INTO company (id, name, base_currency) VALUES (1, ?, ?)').run('Northbridge Trading Ltd', 'GBP');
-  const T = acct.createEntity({ code: 'NBT', name: 'Northbridge Trading Ltd' }).id;
-  const H = acct.createEntity({ code: 'NBH', name: 'Northbridge Holding Ltd' }).id;
+async function seed() {
+  (await db.run('INSERT INTO company (id, name, base_currency) VALUES (1, ?, ?)', 'Northbridge Trading Ltd', 'GBP'));
+  const T = (await acct.createEntity({ code: 'NBT', name: 'Northbridge Trading Ltd' })).id;
+  const H = (await acct.createEntity({ code: 'NBH', name: 'Northbridge Holding Ltd' })).id;
   const ENTITY = { NBT: T, NBH: H };
-  acct.ensurePeriods('2026-01', '2026-12');
-  for (const a of ACCOUNTS) acct.createAccount({ ...a, entity_id: a.entity ? ENTITY[a.entity] : null });
-  for (const c of COST_CENTERS) acct.createCostCenter(c);
+  (await acct.ensurePeriods('2026-01', '2026-12'));
+  for (const a of ACCOUNTS) (await acct.createAccount({ ...a, entity_id: a.entity ? ENTITY[a.entity] : null }));
+  for (const c of COST_CENTERS) (await acct.createCostCenter(c));
 
   const supplier = {};
   for (const s of [
@@ -92,7 +97,7 @@ function seed() {
     // Group company: Northbridge Holding charges Trading a monthly management fee.
     { name: 'Northbridge Holding Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB111222333', sort_code: '60-16-13', account_number: '31926820' },
   ]) {
-    supplier[s.name] = acct.createParty('supplier', s).id;
+    supplier[s.name] = (await acct.createParty('supplier', s)).id;
   }
 
   const customer = {};
@@ -102,14 +107,14 @@ function seed() {
     { name: 'Bayside Imports LLC', country: 'United States', currency: 'USD', vat_number: null },
     { name: 'Northbridge Trading Ltd', country: 'United Kingdom', currency: 'GBP', vat_number: 'GB444555666' },
   ]) {
-    customer[c.name] = acct.createParty('customer', c).id;
+    customer[c.name] = (await acct.createParty('customer', c)).id;
   }
 
   // ----- Opening balance: bank accounts, share capital and the assets taken over -----
   const opening = OPENING_ASSETS.map((a) => ({ ...a, opening_depreciation: assets.depreciationBefore(a, '2026-06') }));
   const sum = (type, key) => opening.filter((a) => a.asset_type === type).reduce((t, a) => t + a[key], 0);
   const nbv = opening.reduce((t, a) => t + a.acquisition_cost - a.opening_depreciation, 0);
-  acct.postJournal({
+  (await acct.postJournal({
     entity_id: T,
     journal_date: BOOKS_START,
     reference: 'OPEN',
@@ -126,11 +131,11 @@ function seed() {
       { account_code: '3000', credit: 150000 },
       { account_code: '3100', credit: nbv, description: 'Retained earnings from prior years' },
     ],
-  });
-  for (const a of opening) assets.createAsset({ ...a, entity_id: T, booking: 'existing', depreciation_start: '2026-06' });
+  }));
+  for (const a of opening) (await assets.createAsset({ ...a, entity_id: T, booking: 'existing', depreciation_start: '2026-06' }));
 
   // Bought during the year and paid straight from the bank: posted by the asset register itself.
-  assets.createAsset({
+  (await assets.createAsset({
     entity_id: T,
     name: 'Warehouse shelving & scanners',
     description: 'Long-span shelving and 6 handheld barcode scanners',
@@ -141,66 +146,66 @@ function seed() {
     depreciation_rate: 20,
     booking: 'journal',
     contra_account: '1000',
-  });
+  }));
 
-  const journal = (journal_date, reference, description, lines, entity_id = T) =>
-    acct.createManualJournal({ entity_id, journal_date, reference, description, currency: 'GBP', exchange_rate: 1, lines });
+  const journal = async (journal_date, reference, description, lines, entity_id = T) =>
+    (await acct.createManualJournal({ entity_id, journal_date, reference, description, currency: 'GBP', exchange_rate: 1, lines }));
   for (const [date, month] of [['2026-06-28', 'June'], ['2026-07-28', 'July'], ['2026-08-28', 'August']]) {
-    journal(date, `PAY-${month.slice(0, 3).toUpperCase()}`, `Salaries ${month} 2026`, [
+    (await journal(date, `PAY-${month.slice(0, 3).toUpperCase()}`, `Salaries ${month} 2026`, [
       { account_code: '6100', debit: 2000, cost_center: '100' },
       { account_code: '6100', debit: 2500, cost_center: '200' },
       { account_code: '6100', debit: 1500, cost_center: '300' },
       { account_code: '6100', debit: 500, cost_center: '400' },
       { account_code: '1000', credit: 6500 },
-    ]);
+    ]));
   }
-  journal('2026-08-31', 'ACC-AUG', 'Accrued audit fee', [
+  (await journal('2026-08-31', 'ACC-AUG', 'Accrued audit fee', [
     { account_code: '6300', debit: 1200, cost_center: '300' },
     { account_code: '2300', credit: 1200 },
-  ]);
+  ]));
 
-  const inv = (type, party, invoice_number, invoice_date, currency, exchange_rate, lines, notes, entity_id = T) =>
-    acct.createInvoice({ entity_id, type, party_id: party, invoice_number, invoice_date, currency, exchange_rate, lines, notes });
-  const pay = (invoice, payment_date, amount, bank_account, bank_amount, bank_rate, notes) =>
-    acct.createPayment({ invoice_id: invoice.id, payment_date, amount, bank_account, bank_amount, bank_rate, notes });
+  const inv = async (type, party, invoice_number, invoice_date, currency, exchange_rate, lines, notes, entity_id = T) =>
+    (await acct.createInvoice({ entity_id, type, party_id: party, invoice_number, invoice_date, currency, exchange_rate, lines, notes }));
+  const pay = async (invoice, payment_date, amount, bank_account, bank_amount, bank_rate, notes) =>
+    (await acct.createPayment({ invoice_id: invoice.id, payment_date, amount, bank_account, bank_amount, bank_rate, notes }));
 
   // ----- Purchase invoices -----
-  const p1 = inv('purchase', supplier['Fenwick & Doyle Ltd'], 'FD-1001', '2026-06-02', 'GBP', 1, [
+  const p1 = (await inv('purchase', supplier['Fenwick & Doyle Ltd'], 'FD-1001', '2026-06-02', 'GBP', 1, [
     { description: 'Office fit-out materials', account_code: '6200', cost_center: '300', net_amount: 3200, vat_rate: 20 },
     { description: 'Installation labour', account_code: '6200', cost_center: '300', net_amount: 1000, vat_rate: 20 },
-  ], 'Office fit-out.');
-  pay(p1, '2026-06-20', 5040, '1000', 5040, 1, 'Paid in full by bank transfer.');
+  ], 'Office fit-out.'));
+  (await pay(p1, '2026-06-20', 5040, '1000', 5040, 1, 'Paid in full by bank transfer.'));
 
   // EUR invoice paid from the EUR account after EUR weakened (0.855 -> 0.848): FX gain.
-  const p2 = inv('purchase', supplier['Rheinmetall Bauteile GmbH'], 'RB-2201', '2026-06-10', 'EUR', 0.855, [
+  const p2 = (await inv('purchase', supplier['Rheinmetall Bauteile GmbH'], 'RB-2201', '2026-06-10', 'EUR', 0.855, [
     { description: 'Precision components, batch 7', account_code: '5000', cost_center: '200', net_amount: 11200, vat_rate: 0 },
     { description: 'Freight', account_code: '5100', cost_center: '200', net_amount: 800, vat_rate: 0 },
-  ], 'Reverse-charge cross-border purchase.');
-  pay(p2, '2026-07-05', 12000, '1010', 12000, 0.848, 'Paid in full via EUR account.');
+  ], 'Reverse-charge cross-border purchase.'));
+  (await pay(p2, '2026-07-05', 12000, '1010', 12000, 0.848, 'Paid in full via EUR account.'));
 
   // USD invoice partly paid from the USD account after USD strengthened (0.79 -> 0.805): FX loss.
-  const p3 = inv('purchase', supplier['Atlas Fasteners Inc.'], 'AF-7781', '2026-06-15', 'USD', 0.79, [
+  const p3 = (await inv('purchase', supplier['Atlas Fasteners Inc.'], 'AF-7781', '2026-06-15', 'USD', 0.79, [
     { description: 'Fasteners and brackets', account_code: '5000', cost_center: '200', net_amount: 9000, vat_rate: 0 },
-  ], 'Balance of 4,000 USD still open.');
-  pay(p3, '2026-07-10', 5000, '1020', 5000, 0.805, 'First instalment.');
+  ], 'Balance of 4,000 USD still open.'));
+  (await pay(p3, '2026-07-10', 5000, '1020', 5000, 0.805, 'First instalment.'));
 
-  inv('purchase', supplier['Lumiere Packaging SARL'], 'LP-3390', '2026-07-01', 'EUR', 0.86, [
+  (await inv('purchase', supplier['Lumiere Packaging SARL'], 'LP-3390', '2026-07-01', 'EUR', 0.86, [
     { description: 'Retail packaging, Q3 run', account_code: '5100', cost_center: '200', net_amount: 3500, vat_rate: 0 },
-  ]);
+  ]));
 
-  const p5 = inv('purchase', supplier['Canary Property Management Ltd'], 'CPM-Q3-26', '2026-07-01', 'GBP', 1, [
+  const p5 = (await inv('purchase', supplier['Canary Property Management Ltd'], 'CPM-Q3-26', '2026-07-01', 'GBP', 1, [
     { description: 'Warehouse rent Q3 2026', account_code: '6000', cost_center: '200', net_amount: 6000, vat_rate: 20 },
     { description: 'Office rent Q3 2026', account_code: '6000', cost_center: '300', net_amount: 1500, vat_rate: 20 },
     { description: 'Service charge Q3 2026', account_code: '6000', cost_center: '300', net_amount: 600, vat_rate: 20 },
-  ]);
-  pay(p5, '2026-07-03', 9720, '1000', 9720, 1, 'Quarterly rent.');
+  ]));
+  (await pay(p5, '2026-07-03', 9720, '1000', 9720, 1, 'Quarterly rent.'));
 
   // Machine bought on a purchase invoice (line on the investment ledger), then added to the register.
-  const p6 = inv('purchase', supplier['Brightcut Laser Systems Ltd'], 'BLS-2026-118', '2026-07-14', 'GBP', 1, [
+  const p6 = (await inv('purchase', supplier['Brightcut Laser Systems Ltd'], 'BLS-2026-118', '2026-07-14', 'GBP', 1, [
     { description: 'Fibre laser cutting machine 3 kW', account_code: '0200', net_amount: 42000, vat_rate: 20 },
-  ]);
-  pay(p6, '2026-07-31', 50400, '1000', 50400, 1, 'Paid on delivery.');
-  assets.createAsset({
+  ]));
+  (await pay(p6, '2026-07-31', 50400, '1000', 50400, 1, 'Paid on delivery.'));
+  (await assets.createAsset({
     entity_id: T,
     name: 'Fibre laser cutter 3 kW',
     description: 'Sheet metal laser cutter, bought on invoice BLS-2026-118',
@@ -210,50 +215,50 @@ function seed() {
     acquisition_cost: 42000,
     depreciation_rate: 12.5,
     booking: 'existing',
-  });
+  }));
 
   // 1,000 USD invoice booked at 800 GBP, paid from the GBP account costing 750 GBP: 50 GBP FX gain.
-  const p7 = inv('purchase', supplier['Atlas Fasteners Inc.'], 'AF-7799', '2026-07-20', 'USD', 0.8, [
+  const p7 = (await inv('purchase', supplier['Atlas Fasteners Inc.'], 'AF-7799', '2026-07-20', 'USD', 0.8, [
     { description: 'Follow-on fasteners order', account_code: '5000', cost_center: '200', net_amount: 1000, vat_rate: 0 },
-  ]);
-  pay(p7, '2026-08-01', 1000, '1000', 750, 1, 'Paid from GBP account - bank converted 1,000 USD for 750 GBP.');
+  ]));
+  (await pay(p7, '2026-08-01', 1000, '1000', 750, 1, 'Paid from GBP account - bank converted 1,000 USD for 750 GBP.'));
 
-  inv('purchase', supplier['Fenwick & Doyle Ltd'], 'FD-1050', '2026-08-04', 'GBP', 1, [
+  (await inv('purchase', supplier['Fenwick & Doyle Ltd'], 'FD-1050', '2026-08-04', 'GBP', 1, [
     { description: 'Signage', account_code: '6200', cost_center: '100', net_amount: 1100, vat_rate: 20 },
     { description: 'Internal partitions', account_code: '6200', cost_center: '300', net_amount: 700, vat_rate: 20 },
-  ]);
+  ]));
 
   // ----- Sales invoices -----
-  const s1 = inv('sale', customer['Harlow Retail Group Ltd'], 'NB-S-001', '2026-06-12', 'GBP', 1, [
+  const s1 = (await inv('sale', customer['Harlow Retail Group Ltd'], 'NB-S-001', '2026-06-12', 'GBP', 1, [
     { description: 'Storage systems', account_code: '4000', cost_center: '100', net_amount: 12000, vat_rate: 20 },
     { description: 'Installation', account_code: '4100', cost_center: '200', net_amount: 1500, vat_rate: 20 },
-  ]);
-  pay(s1, '2026-07-10', 16200, '1000', 16200, 1, 'Received in full.');
+  ]));
+  (await pay(s1, '2026-07-10', 16200, '1000', 16200, 1, 'Received in full.'));
 
   // EUR receipt after EUR strengthened (0.855 -> 0.862): FX gain on a receivable.
-  const s2 = inv('sale', customer['Van Dijk Distributie B.V.'], 'NB-S-002', '2026-06-25', 'EUR', 0.855, [
+  const s2 = (await inv('sale', customer['Van Dijk Distributie B.V.'], 'NB-S-002', '2026-06-25', 'EUR', 0.855, [
     { description: 'Storage systems - export', account_code: '4000', cost_center: '100', net_amount: 18000, vat_rate: 0 },
-  ]);
-  pay(s2, '2026-07-24', 18000, '1010', 18000, 0.862, 'Received in EUR account.');
+  ]));
+  (await pay(s2, '2026-07-24', 18000, '1010', 18000, 0.862, 'Received in EUR account.'));
 
   // USD receivable partly received into the GBP account at a worse rate: FX loss.
-  const s3 = inv('sale', customer['Bayside Imports LLC'], 'NB-S-003', '2026-07-15', 'USD', 0.78, [
+  const s3 = (await inv('sale', customer['Bayside Imports LLC'], 'NB-S-003', '2026-07-15', 'USD', 0.78, [
     { description: 'Storage systems - export', account_code: '4000', cost_center: '100', net_amount: 14000, vat_rate: 0 },
-  ]);
-  pay(s3, '2026-08-14', 8000, '1000', 6160, 1, 'Part payment, converted by the bank into GBP.');
+  ]));
+  (await pay(s3, '2026-08-14', 8000, '1000', 6160, 1, 'Part payment, converted by the bank into GBP.'));
 
-  inv('sale', customer['Harlow Retail Group Ltd'], 'NB-S-004', '2026-08-20', 'GBP', 1, [
+  (await inv('sale', customer['Harlow Retail Group Ltd'], 'NB-S-004', '2026-08-20', 'GBP', 1, [
     { description: 'Mezzanine shelving', account_code: '4000', cost_center: '100', net_amount: 9500, vat_rate: 20 },
-  ]);
+  ]));
 
-  inv('sale', customer['Van Dijk Distributie B.V.'], 'NB-S-005', '2026-09-02', 'EUR', 0.858, [
+  (await inv('sale', customer['Van Dijk Distributie B.V.'], 'NB-S-005', '2026-09-02', 'EUR', 0.858, [
     { description: 'Storage systems - export', account_code: '4000', cost_center: '100', net_amount: 7200, vat_rate: 0 },
     { description: 'Commissioning', account_code: '4100', cost_center: '200', net_amount: 800, vat_rate: 0 },
-  ]);
+  ]));
 
   // ----- Northbridge Holding Ltd -----
   // Opening position: it owns the shares in Trading and holds cash.
-  acct.postJournal({
+  (await acct.postJournal({
     entity_id: H,
     journal_date: BOOKS_START,
     reference: 'OPEN',
@@ -264,32 +269,32 @@ function seed() {
       { account_code: '1050', debit: 80000 },
       { account_code: '3000', credit: 230000 },
     ],
-  });
+  }));
   // Monthly management fee: a sales invoice in Holding and the matching purchase invoice in Trading.
   for (const [month, date, paidOn] of [['06', '2026-06-30', '2026-07-15'], ['07', '2026-07-31', '2026-08-14'], ['08', '2026-08-31', null]]) {
     const number = `NBH-MF-2026-${month}`;
     const fee = [{ description: `Management services 2026-${month}`, net_amount: 4000, vat_rate: 20, cost_center: '300' }];
-    const sale = inv('sale', customer['Northbridge Trading Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '4200' })), 'Intercompany', H);
-    const purchase = inv('purchase', supplier['Northbridge Holding Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '6400' })), 'Intercompany');
+    const sale = (await inv('sale', customer['Northbridge Trading Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '4200' })), 'Intercompany', H));
+    const purchase = (await inv('purchase', supplier['Northbridge Holding Ltd'], number, date, 'GBP', 1, fee.map((l) => ({ ...l, account_code: '6400' })), 'Intercompany'));
     if (paidOn) {
-      pay(purchase, paidOn, 4800, '1000', 4800, 1, 'Intercompany settlement');
-      pay(sale, paidOn, 4800, '1050', 4800, 1, 'Intercompany settlement');
+      (await pay(purchase, paidOn, 4800, '1000', 4800, 1, 'Intercompany settlement'));
+      (await pay(sale, paidOn, 4800, '1050', 4800, 1, 'Intercompany settlement'));
     }
   }
   for (const [date, month] of [['2026-06-28', 'June'], ['2026-07-28', 'July'], ['2026-08-28', 'August']]) {
-    journal(date, `DIR-${month.slice(0, 3).toUpperCase()}`, `Directors' fees ${month} 2026`, [
+    (await journal(date, `DIR-${month.slice(0, 3).toUpperCase()}`, `Directors' fees ${month} 2026`, [
       { account_code: '6100', debit: 2500, cost_center: '300' },
       { account_code: '1050', credit: 2500 },
-    ], H);
+    ], H));
   }
-  journal('2026-08-31', 'ACC-AUG', 'Accrued audit fee', [
+  (await journal('2026-08-31', 'ACC-AUG', 'Accrued audit fee', [
     { account_code: '6300', debit: 800, cost_center: '300' },
     { account_code: '2300', credit: 800 },
-  ], H);
+  ], H));
 
   // Depreciation for every month that has ended, then close June as a worked example.
-  assets.runDueDepreciation();
-  assets.closePeriod('2026-06');
+  (await assets.runDueDepreciation());
+  (await assets.closePeriod('2026-06'));
 }
 
 module.exports = { seedIfEmpty };

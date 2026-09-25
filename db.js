@@ -1,20 +1,21 @@
 'use strict';
 
+/**
+ * Database access for SQLite (local development: a file in ./data) and
+ * Postgres (Vercel: Neon, whenever DATABASE_URL is set). The app writes one
+ * SQL dialect: "?" placeholders and Postgres-style "::type" casts where
+ * Postgres needs a parameter's type; for SQLite the casts are stripped.
+ * All calls are async. Queries inside transaction(fn) automatically run on
+ * that transaction's connection (via AsyncLocalStorage).
+ */
+
 const path = require('path');
 const fs = require('fs');
-const { DatabaseSync } = require('node:sqlite');
+const { AsyncLocalStorage } = require('async_hooks');
 
-// On Vercel only /tmp is writable, and it is temporary: the demo database is
-// rebuilt (and reseeded) whenever a new function instance starts.
-const DB_PATH = process.env.DB_PATH || (process.env.VERCEL ? '/tmp/northbridge.db' : path.join(__dirname, 'data', 'app.db'));
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL;');
-
-// Bump this whenever the schema changes incompatibly. An older database is
-// dropped and rebuilt (then reseeded with demo data on startup).
-const SCHEMA_VERSION = 4;
+// Bump this whenever the schema changes incompatibly: the app's tables are
+// then dropped and rebuilt (and reseeded with demo data on startup).
+const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   iban TEXT,
   -- NULL: shared by all entities; set: only that entity can post to it (e.g. its bank accounts).
   entity_id INTEGER REFERENCES entities(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Bank details are used by the "Pay" screen for purchase invoices.
@@ -56,7 +57,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   account_number TEXT,
   iban TEXT,
   bic TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS customers (
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS customers (
   account_number TEXT,
   iban TEXT,
   bic TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Departments. P&L lines can carry a cost centre to split results by department.
@@ -106,7 +107,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   base_vat REAL NOT NULL,
   base_total REAL NOT NULL,
   notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS invoice_lines (
@@ -137,7 +138,7 @@ CREATE TABLE IF NOT EXISTS payments (
   base_cash REAL NOT NULL,
   fx_gain_loss REAL NOT NULL,
   notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS journals (
@@ -151,14 +152,14 @@ CREATE TABLE IF NOT EXISTS journals (
   source_id INTEGER,
   edit_count INTEGER NOT NULL DEFAULT 0,
   edited_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Every change to a posted journal: what it looked like before and after.
 CREATE TABLE IF NOT EXISTS journal_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   journal_id INTEGER NOT NULL REFERENCES journals(id),
-  changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   summary TEXT NOT NULL,
   before_json TEXT NOT NULL,
   after_json TEXT NOT NULL
@@ -199,7 +200,7 @@ CREATE TABLE IF NOT EXISTS bank_statements (
   currency TEXT,
   from_date TEXT,
   to_date TEXT,
-  uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+  uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS bank_statement_lines (
@@ -235,7 +236,7 @@ CREATE TABLE IF NOT EXISTS fixed_assets (
   opening_depreciation REAL NOT NULL DEFAULT 0,
   depreciation_start TEXT NOT NULL,
   acquisition_journal_id INTEGER REFERENCES journals(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS asset_depreciation (
@@ -261,41 +262,161 @@ CREATE INDEX IF NOT EXISTS idx_invoices_entity ON invoices(entity_id, type);
 CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 `;
 
-const currentVersion = db.prepare('PRAGMA user_version').get().user_version;
-if (currentVersion < SCHEMA_VERSION) {
-  // Old (version 1) layout: rebuild from scratch; seed.js refills it.
-  db.exec('PRAGMA foreign_keys = OFF;');
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
-  for (const t of tables) db.exec(`DROP TABLE IF EXISTS "${t.name}"`);
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-}
-db.exec('PRAGMA foreign_keys = ON;');
-db.exec(SCHEMA);
+// Every table of this app, in dependency order (used to rebuild after a schema change).
+const TABLES = [
+  'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
+  'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
+  'fixed_assets', 'asset_depreciation', 'schema_meta',
+];
 
+const txStore = new AsyncLocalStorage();
+const USE_POSTGRES = Boolean(process.env.DATABASE_URL || process.env.POSTGRES_URL);
+let driver;
+
+if (USE_POSTGRES) {
+  const { Pool, types } = require('pg');
+  // COUNT/SUM of integers and NUMERIC come back as strings by default; the app wants numbers.
+  types.setTypeParser(20, Number);
+  types.setTypeParser(1700, Number);
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
+    max: 3,
+    ssl: { rejectUnauthorized: false },
+  });
+  const toPg = (sql) => {
+    let i = 0;
+    return sql.replace(/\?/g, () => `$${++i}`);
+  };
+  const conn = () => txStore.getStore() || pool;
+  driver = {
+    kind: 'postgres',
+    async all(sql, params) {
+      return (await conn().query(toPg(sql), params)).rows;
+    },
+    async exec(sql) {
+      await conn().query(sql);
+    },
+    async transaction(fn) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await txStore.run(client, fn);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    // Serialise one-off jobs (seeding) across function instances starting at the same time.
+    async lock(key) {
+      await conn().query('SELECT pg_advisory_xact_lock($1)', [key]);
+    },
+    ddl: (sql) => sql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/g, 'SERIAL PRIMARY KEY').replace(/ REAL\b/g, ' DOUBLE PRECISION'),
+  };
+} else {
+  const { DatabaseSync } = require('node:sqlite');
+  const DB_PATH = process.env.DB_PATH || (process.env.VERCEL ? '/tmp/northbridge.db' : path.join(__dirname, 'data', 'app.db'));
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  const sqlite = new DatabaseSync(DB_PATH);
+  sqlite.exec('PRAGMA journal_mode = WAL;');
+  sqlite.exec('PRAGMA foreign_keys = ON;');
+  const toLite = (sql) => sql.replace(/::[a-z]+/gi, '');
+  // One connection: transactions from different requests must take turns.
+  let queue = Promise.resolve();
+  driver = {
+    kind: 'sqlite',
+    async all(sql, params) {
+      return sqlite.prepare(toLite(sql)).all(...params);
+    },
+    async exec(sql) {
+      sqlite.exec(toLite(sql));
+    },
+    transaction(fn) {
+      const run = async () => {
+        sqlite.exec('BEGIN');
+        try {
+          const result = await txStore.run(true, fn);
+          sqlite.exec('COMMIT');
+          return result;
+        } catch (err) {
+          sqlite.exec('ROLLBACK');
+          throw err;
+        }
+      };
+      const next = queue.then(run, run);
+      queue = next.catch(() => {});
+      return next;
+    },
+    async lock() {},
+    ddl: (sql) => sql,
+  };
+}
+
+const db = {
+  kind: driver.kind,
+  /** All rows. */
+  all: (sql, ...params) => driver.all(sql, params),
+  /** First row or undefined. */
+  get: async (sql, ...params) => (await driver.all(sql, params))[0],
+  /** Run a statement; INSERTs return the new row (as `row`) and its id (as `lastInsertRowid`). */
+  run: async (sql, ...params) => {
+    const isInsert = /^\s*INSERT\b/i.test(sql) && !/\bRETURNING\b/i.test(sql);
+    const rows = await driver.all(isInsert ? `${sql} RETURNING *` : sql, params);
+    return { row: rows[0], lastInsertRowid: rows[0] ? rows[0].id : undefined };
+  },
+  /** A reusable statement: statement(sql).run(...params) etc. */
+  statement: (sql) => ({
+    run: (...params) => db.run(sql, ...params),
+    get: (...params) => db.get(sql, ...params),
+    all: (...params) => db.all(sql, ...params),
+  }),
+  exec: (sql) => driver.exec(sql),
+  lock: (key) => driver.lock(key),
+};
+
+/** Run fn in a transaction; rolls back if it throws. Nested calls join the outer transaction. */
+function transaction(fn) {
+  if (txStore.getStore()) return fn();
+  return driver.transaction(fn);
+}
+
+/** Current time as text, the same format in both databases. */
+const nowText = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+let ready = null;
+/** Create the tables (rebuilding them after a schema change). Safe to call often. */
+function init() {
+  ready =
+    ready ||
+    (async () => {
+      await db.exec('CREATE TABLE IF NOT EXISTS schema_meta (id INTEGER PRIMARY KEY, version INTEGER NOT NULL)');
+      const row = await db.get('SELECT version FROM schema_meta WHERE id = 1');
+      const legacy = db.kind === 'sqlite' && !row && (await db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'company'"));
+      if ((row && row.version < SCHEMA_VERSION) || legacy) {
+        for (const t of [...TABLES].reverse()) {
+          if (t !== 'schema_meta') await db.exec(`DROP TABLE IF EXISTS ${t}${db.kind === 'postgres' ? ' CASCADE' : ''}`);
+        }
+      }
+      // Comments are removed first: they may contain semicolons.
+      for (const stmt of driver.ddl(SCHEMA.replace(/--.*$/gm, '')).split(';').map((x) => x.trim()).filter(Boolean)) {
+        await db.exec(stmt);
+      }
+      if (!row || row.version < SCHEMA_VERSION) {
+        await db.exec(`DELETE FROM schema_meta`);
+        await db.run('INSERT INTO schema_meta (id, version) VALUES (1, ?)', SCHEMA_VERSION);
+      }
+    })().catch((err) => {
+      ready = null;
+      throw err;
+    });
+  return ready;
+}
 
 function round2(n) {
   return Math.round((n + (n >= 0 ? 1e-9 : -1e-9)) * 100) / 100;
 }
 
-/**
- * Run fn inside a transaction; rolls back if it throws. Nested calls join
- * the outer transaction (e.g. posting a bank line that creates a payment).
- */
-let txDepth = 0;
-function transaction(fn) {
-  if (txDepth > 0) return fn();
-  db.exec('BEGIN');
-  txDepth++;
-  try {
-    const result = fn();
-    txDepth--;
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    txDepth--;
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-module.exports = { db, round2, transaction, DB_PATH };
+module.exports = { db, init, round2, transaction, nowText };

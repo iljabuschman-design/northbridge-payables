@@ -98,42 +98,36 @@ function parseCamt(xmlRaw) {
  * account whose IBAN matches the statement is used. Lines already imported
  * (same account, date, amount, direction and bank reference) are skipped.
  */
-function importStatement({ filename, content, bank_account, entity_id }) {
+async function importStatement({ filename, content, bank_account, entity_id }) {
   if (!content) throw httpError(400, 'The file is empty');
   const parsed = parseCamt(content);
 
-  return transaction(() => {
+  return transaction(async () => {
     const results = [];
     for (const st of parsed) {
-      let bank = bank_account ? acct.getAccount(bank_account) : null;
+      let bank = bank_account ? (await acct.getAccount(bank_account)) : null;
       if (!bank && st.iban) {
-        bank = db.prepare("SELECT * FROM accounts WHERE category = 'cash' AND iban = ?").get(st.iban.replace(/\s+/g, '').toUpperCase());
+        bank = (await db.get("SELECT * FROM accounts WHERE category = 'cash' AND iban = ?", st.iban.replace(/\s+/g, '').toUpperCase()));
       }
       if (!bank || !bank.bank_currency) {
         throw httpError(400, `Choose the bank ledger account for this statement${st.iban ? ` (IBAN ${st.iban})` : ''}`);
       }
       // A bank account belonging to one entity decides the entity; a shared one needs it chosen.
-      const entity = acct.requireEntity(bank.entity_id || acct.entityOf(entity_id));
+      const entity = (await acct.requireEntity(bank.entity_id || acct.entityOf(entity_id)));
       const ccy = st.currency || st.entries.find((e) => e.currency)?.currency || bank.bank_currency;
       if (ccy !== bank.bank_currency) {
         throw httpError(400, `Statement is in ${ccy} but ${bank.code} ${bank.name} is a ${bank.bank_currency} account`);
       }
       // Remember the IBAN so the next statement for this account links itself.
-      if (st.iban && !bank.iban) db.prepare('UPDATE accounts SET iban = ? WHERE code = ?').run(st.iban.replace(/\s+/g, '').toUpperCase(), bank.code);
+      if (st.iban && !bank.iban) (await db.run('UPDATE accounts SET iban = ? WHERE code = ?', st.iban.replace(/\s+/g, '').toUpperCase(), bank.code));
 
-      const info = db
-        .prepare('INSERT INTO bank_statements (entity_id, filename, bank_account, statement_ref, iban, currency, from_date, to_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(entity.id, filename || null, bank.code, st.statement_ref, st.iban, ccy, st.from_date, st.to_date);
+      const info = (await db.run('INSERT INTO bank_statements (entity_id, filename, bank_account, statement_ref, iban, currency, from_date, to_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entity.id, filename || null, bank.code, st.statement_ref, st.iban, ccy, st.from_date, st.to_date));
       const statementId = Number(info.lastInsertRowid);
 
-      const dupCheck = db.prepare(
-        `SELECT 1 FROM bank_statement_lines l JOIN bank_statements s ON s.id = l.statement_id
-         WHERE s.bank_account = ? AND l.booking_date = ? AND l.amount = ? AND l.direction = ? AND l.reference = ?`
-      );
-      const insert = db.prepare(
-        `INSERT INTO bank_statement_lines (statement_id, booking_date, amount, direction, currency, counterparty, remittance, reference)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      );
+      const dupCheck = db.statement(`SELECT 1 FROM bank_statement_lines l JOIN bank_statements s ON s.id = l.statement_id
+         WHERE s.bank_account = ? AND l.booking_date = ? AND l.amount = ? AND l.direction = ? AND l.reference = ?`);
+      const insert = db.statement(`INSERT INTO bank_statement_lines (statement_id, booking_date, amount, direction, currency, counterparty, remittance, reference)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
       let imported = 0;
       let skipped = 0;
       for (const e of st.entries) {
@@ -141,16 +135,16 @@ function importStatement({ filename, content, bank_account, entity_id }) {
           skipped++;
           continue;
         }
-        if (e.reference && dupCheck.get(bank.code, e.booking_date, round2(e.amount), e.direction, e.reference)) {
+        if (e.reference && (await dupCheck.get(bank.code, e.booking_date, round2(e.amount), e.direction, e.reference))) {
           skipped++;
           continue;
         }
-        insert.run(statementId, e.booking_date, round2(e.amount), e.direction, e.currency || ccy, e.counterparty, e.remittance, e.reference);
+        (await insert.run(statementId, e.booking_date, round2(e.amount), e.direction, e.currency || ccy, e.counterparty, e.remittance, e.reference));
         imported++;
       }
       if (imported === 0) {
         // Nothing new (e.g. the same file uploaded twice): don't keep an empty statement.
-        db.prepare('DELETE FROM bank_statements WHERE id = ?').run(statementId);
+        (await db.run('DELETE FROM bank_statements WHERE id = ?', statementId));
         results.push({ statement_id: null, bank_account: bank.code, imported, skipped });
         continue;
       }
@@ -160,36 +154,24 @@ function importStatement({ filename, content, bank_account, entity_id }) {
   });
 }
 
-function listStatements(entityId) {
+async function listStatements(entityId) {
   const E = acct.entityOf(entityId);
-  return db
-    .prepare(
-      `SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, COUNT(l.id) AS line_count,
+  return (await db.all(`SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, COUNT(l.id) AS line_count,
               SUM(CASE WHEN l.journal_id IS NULL THEN 1 ELSE 0 END) AS open_lines
        FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id
        LEFT JOIN bank_statement_lines l ON l.statement_id = s.id
-       WHERE (? IS NULL OR s.entity_id = ?)
-       GROUP BY s.id ORDER BY s.uploaded_at DESC, s.id DESC`
-    )
-    .all(E, E);
+       WHERE (?::int IS NULL OR s.entity_id = ?)
+       GROUP BY s.id, a.name, e.code ORDER BY s.uploaded_at DESC, s.id DESC`, E, E));
 }
 
-function getStatement(id) {
-  const s = db
-    .prepare(
-      'SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, e.name AS entity_name FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id WHERE s.id = ?'
-    )
-    .get(id);
+async function getStatement(id) {
+  const s = (await db.get('SELECT s.*, a.name AS bank_account_name, e.code AS entity_code, e.name AS entity_name FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id WHERE s.id = ?', id));
   if (!s) return null;
-  const lines = db
-    .prepare(
-      `SELECT l.*, j.description AS journal_description,
-              (SELECT GROUP_CONCAT(le.account_code, ', ') FROM ledger_entries le
+  const lines = (await db.all(`SELECT l.*, j.description AS journal_description,
+              (SELECT string_agg(le.account_code, ', ') FROM ledger_entries le
                  WHERE le.journal_id = l.journal_id AND le.account_code <> ?) AS contra_accounts
        FROM bank_statement_lines l LEFT JOIN journals j ON j.id = l.journal_id
-       WHERE l.statement_id = ? ORDER BY l.booking_date, l.id`
-    )
-    .all(s.bank_account, id);
+       WHERE l.statement_id = ? ORDER BY l.booking_date, l.id`, s.bank_account, id));
   return { ...s, lines };
 }
 
@@ -203,29 +185,29 @@ function getStatement(id) {
  *    settles the invoice and books any FX difference.
  */
 async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount, description, cost_center }) {
-  const line = db.prepare('SELECT * FROM bank_statement_lines WHERE id = ?').get(lineId);
+  const line = (await db.get('SELECT * FROM bank_statement_lines WHERE id = ?', lineId));
   if (!line) throw httpError(404, 'Statement line not found');
   if (line.journal_id) throw httpError(400, 'This line has already been posted');
-  const statement = db.prepare('SELECT * FROM bank_statements WHERE id = ?').get(line.statement_id);
-  const bank = acct.getAccount(statement.bank_account);
+  const statement = (await db.get('SELECT * FROM bank_statements WHERE id = ?', line.statement_id));
+  const bank = (await acct.getAccount(statement.bank_account));
 
   const rate = await fx.getRate(bank.bank_currency, line.booking_date);
   if (!rate) throw httpError(503, `No ${bank.bank_currency} exchange rate available for ${line.booking_date}`);
   const moneyIn = line.direction === 'CRDT';
   const label = [line.counterparty, line.remittance].filter(Boolean).join(' - ') || 'Bank statement line';
 
-  return transaction(() => {
+  return transaction(async () => {
     let journalId;
     let paymentId = null;
     if (mode === 'invoice') {
-      const invoice = acct.getInvoice(Number(invoice_id));
+      const invoice = (await acct.getInvoice(Number(invoice_id)));
       if (!invoice) throw httpError(400, 'Choose an invoice');
       if (invoice.entity_id !== statement.entity_id) throw httpError(400, `Invoice ${invoice.invoice_number} belongs to ${invoice.entity_name}`);
       if (moneyIn !== (invoice.type === 'sale')) {
         throw httpError(400, moneyIn ? 'Money received can only settle a sales invoice' : 'Money paid out can only settle a purchase invoice');
       }
       const settled = invoice.currency === bank.bank_currency ? line.amount : Number(invoice_amount);
-      const res = acct.createPayment({
+      const res = (await acct.createPayment({
         invoice_id: invoice.id,
         payment_date: line.booking_date,
         amount: settled,
@@ -233,17 +215,17 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
         bank_amount: line.amount,
         bank_rate: rate.rate,
         notes: `Bank statement: ${label}`,
-      });
+      }));
       journalId = res.journal_id;
       paymentId = res.payment.id;
     } else if (mode === 'account') {
-      const contra = acct.getAccount(account_code);
+      const contra = (await acct.getAccount(account_code));
       if (!contra) throw httpError(400, 'Choose the opposing ledger account');
       if (contra.code === bank.code) throw httpError(400, 'The opposing account must differ from the bank account');
       const base = round2(line.amount * rate.rate);
       const fxNote = bank.bank_currency === 'GBP' ? null : `${line.amount.toFixed(2)} ${bank.bank_currency} @ ${rate.rate} (ECB ${rate.rate_date})`;
       const desc = description && String(description).trim() ? String(description).trim() : label;
-      journalId = acct.postJournal({
+      journalId = (await acct.postJournal({
         entity_id: statement.entity_id,
         journal_date: line.booking_date,
         reference: line.reference,
@@ -254,12 +236,12 @@ async function postLine(lineId, { mode, account_code, invoice_id, invoice_amount
           { account_code: bank.code, [moneyIn ? 'debit' : 'credit']: base, currency: bank.bank_currency, fx_note: fxNote, description: desc },
           { account_code: contra.code, [moneyIn ? 'credit' : 'debit']: base, currency: bank.bank_currency, fx_note: fxNote, description: desc, cost_center },
         ],
-      });
+      }));
     } else {
       throw httpError(400, 'Mode must be "account" or "invoice"');
     }
-    db.prepare('UPDATE bank_statement_lines SET journal_id = ?, payment_id = ? WHERE id = ?').run(journalId, paymentId, line.id);
-    return db.prepare('SELECT * FROM bank_statement_lines WHERE id = ?').get(line.id);
+    (await db.run('UPDATE bank_statement_lines SET journal_id = ?, payment_id = ? WHERE id = ?', journalId, paymentId, line.id));
+    return (await db.get('SELECT * FROM bank_statement_lines WHERE id = ?', line.id));
   });
 }
 
@@ -279,10 +261,10 @@ function mentionsInvoice(text, invoiceNumber) {
 }
 
 /** The one open invoice (sales for money in, purchase for money out) whose number the line mentions, if any. */
-function matchInvoice(line, entityId) {
+async function matchInvoice(line, entityId) {
   const text = `${line.remittance || ''} ${line.counterparty || ''}`;
   const type = line.direction === 'CRDT' ? 'sale' : 'purchase';
-  const matches = acct.listInvoices(type, entityId).filter((i) => i.status !== 'Paid' && mentionsInvoice(text, i.invoice_number));
+  const matches = (await acct.listInvoices(type, entityId)).filter((i) => i.status !== 'Paid' && mentionsInvoice(text, i.invoice_number));
   // Several invoices mentioned (e.g. one payment for two invoices) is left for the user to split.
   return matches.length === 1 ? matches[0] : null;
 }
@@ -295,18 +277,18 @@ function matchInvoice(line, entityId) {
  * balance, with the FX difference booked as usual.
  */
 async function autoSettleStatement(statementId) {
-  const statement = db.prepare('SELECT * FROM bank_statements WHERE id = ?').get(statementId);
+  const statement = (await db.get('SELECT * FROM bank_statements WHERE id = ?', statementId));
   if (!statement) throw httpError(404, 'Statement not found');
-  const bankCcy = acct.getAccount(statement.bank_account).bank_currency;
-  const lines = db.prepare('SELECT * FROM bank_statement_lines WHERE statement_id = ? AND journal_id IS NULL ORDER BY booking_date, id').all(statementId);
+  const bankCcy = (await acct.getAccount(statement.bank_account)).bank_currency;
+  const lines = (await db.all('SELECT * FROM bank_statement_lines WHERE statement_id = ? AND journal_id IS NULL ORDER BY booking_date, id', statementId));
   const settled = [];
   for (const line of lines) {
-    const invoice = matchInvoice(line, statement.entity_id);
+    const invoice = (await matchInvoice(line, statement.entity_id));
     if (!invoice) continue;
     if (invoice.currency === bankCcy && line.amount > invoice.remaining_amount + 0.005) continue;
     try {
       await postLine(line.id, { mode: 'invoice', invoice_id: invoice.id, invoice_amount: invoice.remaining_amount });
-      db.prepare('UPDATE bank_statement_lines SET auto_settled = 1 WHERE id = ?').run(line.id);
+      (await db.run('UPDATE bank_statement_lines SET auto_settled = 1 WHERE id = ?', line.id));
       settled.push({ line_id: line.id, invoice_number: invoice.invoice_number });
     } catch (err) {
       console.error(`Auto-settle of bank line ${line.id} failed:`, err.message);
@@ -317,7 +299,7 @@ async function autoSettleStatement(statementId) {
 
 /** Import a CAMT file, then automatically settle lines that name an open invoice. */
 async function importAndSettle(body) {
-  const results = importStatement(body);
+  const results = (await importStatement(body));
   for (const r of results) {
     r.auto_settled = r.statement_id ? await autoSettleStatement(r.statement_id) : [];
   }
@@ -334,9 +316,9 @@ async function importAndSettle(body) {
  * realised FX gain/loss, as with any other payment.
  */
 async function simulatedPayment({ invoice_id, bank_account, amount, bank_name }) {
-  const invoice = acct.getInvoice(Number(invoice_id));
+  const invoice = (await acct.getInvoice(Number(invoice_id)));
   if (!invoice || invoice.type !== 'purchase') throw httpError(400, 'Choose an open purchase invoice');
-  const bank = acct.getAccount(bank_account);
+  const bank = (await acct.getAccount(bank_account));
   if (!bank || !bank.bank_currency) throw httpError(400, 'Choose the account to pay from');
   amount = round2(Number(amount));
   if (!(amount > 0)) throw httpError(400, 'Amount must be more than zero');
@@ -348,7 +330,7 @@ async function simulatedPayment({ invoice_id, bank_account, amount, bank_name })
   const bankAmount = bank.bank_currency === invoice.currency ? amount : round2((amount * invRate.rate) / bankRate.rate);
   const reference = `SIM-${date.replace(/-/g, '')}-${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
 
-  const res = acct.createPayment({
+  const res = (await acct.createPayment({
     invoice_id: invoice.id,
     payment_date: date,
     amount,
@@ -356,7 +338,7 @@ async function simulatedPayment({ invoice_id, bank_account, amount, bank_name })
     bank_amount: bankAmount,
     bank_rate: bankRate.rate,
     notes: `Paid via ${bank_name || 'bank'} (simulated), transaction ${reference}`,
-  });
+  }));
   return { ...res, transaction_reference: reference, bank_amount: bankAmount, bank_currency: bank.bank_currency };
 }
 

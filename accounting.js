@@ -1,6 +1,6 @@
 'use strict';
 
-const { db, round2, transaction } = require('./db');
+const { db, round2, transaction, nowText } = require('./db');
 
 const CURRENCIES = ['GBP', 'EUR', 'USD'];
 
@@ -54,42 +54,42 @@ function httpError(status, message) {
   return err;
 }
 
-function getCompany() {
-  return db.prepare('SELECT * FROM company WHERE id = 1').get();
+async function getCompany() {
+  return (await db.get('SELECT * FROM company WHERE id = 1'));
 }
 
 // ---------- Entities ----------
 
-function listEntities() {
-  return db.prepare('SELECT * FROM entities ORDER BY id').all();
+async function listEntities() {
+  return (await db.all('SELECT * FROM entities ORDER BY id'));
 }
 
-function getEntity(id) {
-  return db.prepare('SELECT * FROM entities WHERE id = ?').get(Number(id));
+async function getEntity(id) {
+  return (await db.get('SELECT * FROM entities WHERE id = ?', Number(id)));
 }
 
-function requireEntity(id) {
-  const e = id ? getEntity(id) : null;
+async function requireEntity(id) {
+  const e = id ? (await getEntity(id)) : null;
   if (!e) throw httpError(400, 'Choose an entity');
   return e;
 }
 
-function createEntity({ code, name }) {
+async function createEntity({ code, name }) {
   code = String(code || '').trim().toUpperCase();
   name = String(name || '').trim();
   if (!/^[A-Z0-9-]{1,10}$/.test(code)) throw httpError(400, 'Entity code must be 1-10 letters/digits');
   if (!name) throw httpError(400, 'Entity name is required');
-  const info = db.prepare('INSERT INTO entities (code, name) VALUES (?, ?)').run(code, name);
-  return getEntity(Number(info.lastInsertRowid));
+  const info = (await db.run('INSERT INTO entities (code, name) VALUES (?, ?)', code, name));
+  return (await getEntity(Number(info.lastInsertRowid)));
 }
 
 /** Entity filter from a request: null means all entities together (no intercompany elimination). */
 const entityOf = (v) => (v === undefined || v === null || v === '' || v === 'all' ? null : Number(v));
 
 /** An account restricted to one entity (e.g. its bank account) can't be used by another. */
-function assertAccountForEntity(account, entityId) {
+async function assertAccountForEntity(account, entityId) {
   if (account.entity_id && account.entity_id !== Number(entityId)) {
-    const e = getEntity(account.entity_id);
+    const e = (await getEntity(account.entity_id));
     throw httpError(400, `${account.code} ${account.name} belongs to ${e ? e.name : 'another entity'}`);
   }
 }
@@ -101,73 +101,65 @@ function decorateAccount(a) {
   return { ...a, category_name: cat ? cat.name : a.category, statement: cat ? cat.statement : null, side: cat ? cat.side : null, cashflow: cat ? cat.cashflow : null };
 }
 
-function listAccounts(entityId) {
+async function listAccounts(entityId) {
   const E = entityOf(entityId);
-  const rows = db
-    .prepare(
-      `SELECT a.*, COALESCE(SUM(l.debit), 0) AS total_debit, COALESCE(SUM(l.credit), 0) AS total_credit
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (? IS NULL OR l.entity_id = ?)
-       GROUP BY a.code ORDER BY a.code`
-    )
-    .all(E, E);
+  const rows = (await db.all(`SELECT a.*, COALESCE(SUM(l.debit), 0) AS total_debit, COALESCE(SUM(l.credit), 0) AS total_credit
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id = ?)
+       GROUP BY a.code ORDER BY a.code`, E, E));
   return rows.map((r) => ({ ...decorateAccount(r), balance: round2(r.total_debit - r.total_credit) }));
 }
 
-function getAccount(code) {
-  const a = db.prepare('SELECT * FROM accounts WHERE code = ?').get(code);
+async function getAccount(code) {
+  const a = (await db.get('SELECT * FROM accounts WHERE code = ?', code));
   return a ? decorateAccount(a) : null;
 }
 
-function accountByRole(role) {
-  const a = db.prepare('SELECT * FROM accounts WHERE role = ?').get(role);
+async function accountByRole(role) {
+  const a = (await db.get('SELECT * FROM accounts WHERE role = ?', role));
   if (!a) throw httpError(500, `No account is set up for role "${role}"`);
   return a;
 }
 
-function listBankAccounts() {
-  return db.prepare("SELECT * FROM accounts WHERE category = 'cash' AND bank_currency IS NOT NULL ORDER BY code").all();
+async function listBankAccounts() {
+  return (await db.all("SELECT * FROM accounts WHERE category = 'cash' AND bank_currency IS NOT NULL ORDER BY code"));
 }
 
-function createAccount({ code, name, category, bank_currency, iban, role, entity_id }) {
+async function createAccount({ code, name, category, bank_currency, iban, role, entity_id }) {
   code = String(code || '').trim();
   name = String(name || '').trim();
   if (!/^[0-9A-Za-z-]{1,10}$/.test(code)) throw httpError(400, 'Account code must be 1-10 letters/digits');
   if (!name) throw httpError(400, 'Account name is required');
   if (!CATEGORY_BY_KEY[category]) throw httpError(400, 'Unknown category');
-  if (getAccount(code)) throw httpError(400, `Account ${code} already exists`);
+  if ((await getAccount(code))) throw httpError(400, `Account ${code} already exists`);
   if (category === 'cash') {
     if (!CURRENCIES.includes(bank_currency)) throw httpError(400, 'A bank account needs a currency');
   } else {
     bank_currency = null;
   }
-  if (entity_id) requireEntity(entity_id);
-  db.prepare('INSERT INTO accounts (code, name, category, role, bank_currency, iban, entity_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-    code,
+  if (entity_id) (await requireEntity(entity_id));
+  (await db.run('INSERT INTO accounts (code, name, category, role, bank_currency, iban, entity_id) VALUES (?, ?, ?, ?, ?, ?, ?)', code,
     name,
     category,
     role || null,
     bank_currency,
     normaliseIban(iban),
-    entity_id ? Number(entity_id) : null
-  );
-  return getAccount(code);
+    entity_id ? Number(entity_id) : null));
+  return (await getAccount(code));
 }
 
-function updateAccount(code, { name, category, iban }) {
-  const existing = getAccount(code);
+async function updateAccount(code, { name, category, iban }) {
+  const existing = (await getAccount(code));
   if (!existing) throw httpError(404, 'Account not found');
   if (name !== undefined && !String(name).trim()) throw httpError(400, 'Account name is required');
   if (category !== undefined && !CATEGORY_BY_KEY[category]) throw httpError(400, 'Unknown category');
   if (category !== undefined && existing.bank_currency && category !== 'cash') {
     throw httpError(400, 'Bank accounts must stay in the Cash & bank category');
   }
-  db.prepare('UPDATE accounts SET name = ?, category = ?, iban = ? WHERE code = ?').run(
-    name !== undefined ? String(name).trim() : existing.name,
+  (await db.run('UPDATE accounts SET name = ?, category = ?, iban = ? WHERE code = ?', name !== undefined ? String(name).trim() : existing.name,
     category !== undefined ? category : existing.category,
     iban !== undefined ? normaliseIban(iban) : existing.iban,
-    code
-  );
-  return getAccount(code);
+    code));
+  return (await getAccount(code));
 }
 
 function normaliseIban(iban) {
@@ -175,8 +167,8 @@ function normaliseIban(iban) {
   return v || null;
 }
 
-function requireAccount(code) {
-  const a = getAccount(code);
+async function requireAccount(code) {
+  const a = (await getAccount(code));
   if (!a) throw httpError(400, `Unknown account ${code}`);
   return a;
 }
@@ -185,12 +177,12 @@ function requireAccount(code) {
 
 const PARTY_TABLE = { supplier: 'suppliers', customer: 'customers' };
 
-function listParties(kind) {
-  return db.prepare(`SELECT * FROM ${PARTY_TABLE[kind]} ORDER BY name`).all();
+async function listParties(kind) {
+  return (await db.all(`SELECT * FROM ${PARTY_TABLE[kind]} ORDER BY name`));
 }
 
-function getParty(kind, id) {
-  return db.prepare(`SELECT * FROM ${PARTY_TABLE[kind]} WHERE id = ?`).get(id);
+async function getParty(kind, id) {
+  return (await db.get(`SELECT * FROM ${PARTY_TABLE[kind]} WHERE id = ?`, id));
 }
 
 const clean = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
@@ -214,56 +206,50 @@ function partyFields({ name, country, currency, vat_number, sort_code, account_n
   ];
 }
 
-function createParty(kind, data) {
-  const info = db
-    .prepare(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number, sort_code, account_number, iban, bic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(...partyFields(data));
-  return getParty(kind, Number(info.lastInsertRowid));
+async function createParty(kind, data) {
+  const info = (await db.run(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number, sort_code, account_number, iban, bic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, ...partyFields(data)));
+  return (await getParty(kind, Number(info.lastInsertRowid)));
 }
 
-function updateParty(kind, id, data) {
-  if (!getParty(kind, id)) throw httpError(404, `${kind} not found`);
-  db.prepare(
-    `UPDATE ${PARTY_TABLE[kind]} SET name = ?, country = ?, currency = ?, vat_number = ?, sort_code = ?, account_number = ?, iban = ?, bic = ? WHERE id = ?`
-  ).run(...partyFields(data), id);
-  return getParty(kind, id);
+async function updateParty(kind, id, data) {
+  if (!(await getParty(kind, id))) throw httpError(404, `${kind} not found`);
+  (await db.run(`UPDATE ${PARTY_TABLE[kind]} SET name = ?, country = ?, currency = ?, vat_number = ?, sort_code = ?, account_number = ?, iban = ?, bic = ? WHERE id = ?`, ...partyFields(data), id));
+  return (await getParty(kind, id));
 }
 
 // ---------- Cost centres ----------
 
-function listCostCenters() {
-  return db.prepare('SELECT * FROM cost_centers ORDER BY code').all();
+async function listCostCenters() {
+  return (await db.all('SELECT * FROM cost_centers ORDER BY code'));
 }
 
-function createCostCenter({ code, name }) {
+async function createCostCenter({ code, name }) {
   code = String(code || '').trim();
   name = String(name || '').trim();
   if (!/^[0-9A-Za-z-]{1,10}$/.test(code)) throw httpError(400, 'Cost centre code must be 1-10 letters/digits');
   if (!name) throw httpError(400, 'Cost centre name is required');
-  if (db.prepare('SELECT 1 FROM cost_centers WHERE code = ?').get(code)) throw httpError(400, `Cost centre ${code} already exists`);
-  db.prepare('INSERT INTO cost_centers (code, name) VALUES (?, ?)').run(code, name);
-  return db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+  if ((await db.get('SELECT 1 FROM cost_centers WHERE code = ?', code))) throw httpError(400, `Cost centre ${code} already exists`);
+  (await db.run('INSERT INTO cost_centers (code, name) VALUES (?, ?)', code, name));
+  return (await db.get('SELECT * FROM cost_centers WHERE code = ?', code));
 }
 
-function updateCostCenter(code, { name, active }) {
-  const cc = db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+async function updateCostCenter(code, { name, active }) {
+  const cc = (await db.get('SELECT * FROM cost_centers WHERE code = ?', code));
   if (!cc) throw httpError(404, 'Cost centre not found');
   if (name !== undefined && !String(name).trim()) throw httpError(400, 'Cost centre name is required');
-  db.prepare('UPDATE cost_centers SET name = ?, active = ? WHERE code = ?').run(
-    name !== undefined ? String(name).trim() : cc.name,
+  (await db.run('UPDATE cost_centers SET name = ?, active = ? WHERE code = ?', name !== undefined ? String(name).trim() : cc.name,
     active !== undefined ? (active ? 1 : 0) : cc.active,
-    code
-  );
-  return db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+    code));
+  return (await db.get('SELECT * FROM cost_centers WHERE code = ?', code));
 }
 
 /**
  * Cost centres only apply to P&L accounts; on a balance sheet account the
  * value is dropped. An unknown or inactive code is an error.
  */
-function resolveCostCenter(account, code) {
+async function resolveCostCenter(account, code) {
   if (!code || CATEGORY_BY_KEY[account.category].statement !== 'PL') return null;
-  const cc = db.prepare('SELECT * FROM cost_centers WHERE code = ?').get(code);
+  const cc = (await db.get('SELECT * FROM cost_centers WHERE code = ?', code));
   if (!cc) throw httpError(400, `Unknown cost centre ${code}`);
   if (!cc.active) throw httpError(400, `Cost centre ${code} ${cc.name} is inactive`);
   return cc.code;
@@ -284,52 +270,47 @@ function nextPeriod(period) {
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
 }
 
-function ensurePeriod(period) {
+async function ensurePeriod(period) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw httpError(400, `Invalid period ${period}`);
-  const existing = db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+  const existing = (await db.get('SELECT * FROM periods WHERE period = ?', period));
   if (existing) return existing;
   const { start_date, end_date } = periodBounds(period);
-  db.prepare('INSERT INTO periods (period, start_date, end_date) VALUES (?, ?, ?)').run(period, start_date, end_date);
-  return db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+  // Another request (or function instance) may create it at the same moment.
+  await db.run('INSERT INTO periods (period, start_date, end_date) VALUES (?, ?, ?) ON CONFLICT (period) DO NOTHING', period, start_date, end_date);
+  return (await db.get('SELECT * FROM periods WHERE period = ?', period));
 }
 
 /** Make sure every month from `from` to `to` (inclusive) exists as a period. */
-function ensurePeriods(from, to) {
-  for (let p = from; p <= to; p = nextPeriod(p)) ensurePeriod(p);
+async function ensurePeriods(from, to) {
+  for (let p = from; p <= to; p = nextPeriod(p)) (await ensurePeriod(p));
 }
 
-function listPeriods() {
-  return db
-    .prepare(
-      `SELECT p.*,
+async function listPeriods() {
+  return (await db.all(`SELECT p.*,
          (SELECT COUNT(*) FROM journals j WHERE j.period = p.period) AS journal_count,
          (SELECT COALESCE(SUM(amount), 0) FROM asset_depreciation d WHERE d.period = p.period) AS depreciation
-       FROM periods p ORDER BY p.period DESC`
-    )
-    .all()
+       FROM periods p ORDER BY p.period DESC`))
     .map((p) => ({ ...p, depreciation: round2(p.depreciation) }));
 }
 
-function setPeriodStatus(period, status) {
-  const p = db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+async function setPeriodStatus(period, status) {
+  const p = (await db.get('SELECT * FROM periods WHERE period = ?', period));
   if (!p) throw httpError(404, 'Period not found');
   if (status === 'closed') {
     // Close in order, so nothing can still be posted "behind" a closed month.
-    const earlierOpen = db
-      .prepare("SELECT period FROM periods WHERE period < ? AND status = 'open' AND period IN (SELECT DISTINCT period FROM journals) ORDER BY period LIMIT 1")
-      .get(period);
+    const earlierOpen = (await db.get("SELECT period FROM periods WHERE period < ? AND status = 'open' AND period IN (SELECT DISTINCT period FROM journals) ORDER BY period LIMIT 1", period));
     if (earlierOpen) throw httpError(400, `Close ${earlierOpen.period} first`);
-    db.prepare("UPDATE periods SET status = 'closed', closed_at = datetime('now') WHERE period = ?").run(period);
+    (await db.run("UPDATE periods SET status = 'closed', closed_at = ? WHERE period = ?", nowText(), period));
   } else {
-    const laterClosed = db.prepare("SELECT period FROM periods WHERE period > ? AND status = 'closed' ORDER BY period DESC LIMIT 1").get(period);
+    const laterClosed = (await db.get("SELECT period FROM periods WHERE period > ? AND status = 'closed' ORDER BY period DESC LIMIT 1", period));
     if (laterClosed) throw httpError(400, `Reopen ${laterClosed.period} first`);
-    db.prepare("UPDATE periods SET status = 'open', closed_at = NULL WHERE period = ?").run(period);
+    (await db.run("UPDATE periods SET status = 'open', closed_at = NULL WHERE period = ?", period));
   }
-  return db.prepare('SELECT * FROM periods WHERE period = ?').get(period);
+  return (await db.get('SELECT * FROM periods WHERE period = ?', period));
 }
 
-function assertPeriodOpen(date) {
-  const p = ensurePeriod(periodOf(date));
+async function assertPeriodOpen(date) {
+  const p = (await ensurePeriod(periodOf(date)));
   if (p.status === 'closed') throw httpError(400, `Period ${p.period} is closed - reopen it in Setup to post on ${date}`);
   return p.period;
 }
@@ -340,31 +321,29 @@ function assertPeriodOpen(date) {
  * Post a balanced journal. Lines carry base-currency (GBP) debit/credit.
  * Throws (and so rolls back the surrounding transaction) if it doesn't balance.
  */
-function postJournal({ entity_id, journal_date, reference, description, source_type, source_id, lines }) {
+async function postJournal({ entity_id, journal_date, reference, description, source_type, source_id, lines }) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(journal_date || '')) throw httpError(400, 'Journal date is required');
-  const entity = requireEntity(entity_id);
-  const period = assertPeriodOpen(journal_date);
+  const entity = (await requireEntity(entity_id));
+  const period = (await assertPeriodOpen(journal_date));
   const posted = lines
     .map((l) => ({ ...l, debit: round2(l.debit || 0), credit: round2(l.credit || 0) }))
     .filter((l) => l.debit !== 0 || l.credit !== 0);
   if (posted.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
-  checkJournalLines(posted, entity.id);
+  (await checkJournalLines(posted, entity.id));
 
-  const info = db
-    .prepare('INSERT INTO journals (journal_date, period, entity_id, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(journal_date, period, entity.id, reference || null, description, source_type, source_id ?? null);
+  const info = (await db.run('INSERT INTO journals (journal_date, period, entity_id, reference, description, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?, ?)', journal_date, period, entity.id, reference || null, description, source_type, source_id ?? null));
   const journalId = Number(info.lastInsertRowid);
-  insertLedgerLines(journalId, entity.id, journal_date, description, posted);
+  (await insertLedgerLines(journalId, entity.id, journal_date, description, posted));
   return journalId;
 }
 
 /** Validate non-zero journal lines (accounts, entity, cost centres, amounts) and that they balance. */
-function checkJournalLines(posted, entityId) {
+async function checkJournalLines(posted, entityId) {
   if (posted.length < 2) throw httpError(400, 'A journal needs at least two non-zero lines');
   for (const l of posted) {
-    const account = requireAccount(l.account_code);
-    assertAccountForEntity(account, entityId);
-    l.cost_center = resolveCostCenter(account, l.cost_center);
+    const account = (await requireAccount(l.account_code));
+    (await assertAccountForEntity(account, entityId));
+    l.cost_center = (await resolveCostCenter(account, l.cost_center));
     if (l.debit < 0 || l.credit < 0) throw httpError(400, 'Debit and credit amounts cannot be negative');
     if (l.debit && l.credit) throw httpError(400, 'A line can have a debit or a credit, not both');
   }
@@ -373,13 +352,11 @@ function checkJournalLines(posted, entityId) {
   if (Math.abs(dr - cr) > 0.001) throw httpError(400, `Journal does not balance: debits ${dr.toFixed(2)} vs credits ${cr.toFixed(2)}`);
 }
 
-function insertLedgerLines(journalId, entityId, date, description, posted) {
-  const insert = db.prepare(
-    `INSERT INTO ledger_entries (journal_id, entity_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center, invoice_line_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
+async function insertLedgerLines(journalId, entityId, date, description, posted) {
+  const insert = db.statement(`INSERT INTO ledger_entries (journal_id, entity_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center, invoice_line_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const l of posted) {
-    insert.run(journalId, entityId, date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center, l.invoice_line_id || null);
+    (await insert.run(journalId, entityId, date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center, l.invoice_line_id || null));
   }
 }
 
@@ -388,8 +365,8 @@ function insertLedgerLines(journalId, entityId, date, description, posted) {
  * and translated to GBP at the given rate; any 1p rounding difference from the
  * translation is absorbed by the largest line so the GBP journal still balances.
  */
-function createManualJournal({ entity_id, journal_date, reference, description, currency, exchange_rate, lines }) {
-  const company = getCompany();
+async function createManualJournal({ entity_id, journal_date, reference, description, currency, exchange_rate, lines }) {
+  const company = (await getCompany());
   currency = currency || company.base_currency;
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
   exchange_rate = currency === company.base_currency ? 1 : Number(exchange_rate);
@@ -425,8 +402,8 @@ function createManualJournal({ entity_id, journal_date, reference, description, 
     target[side] = round2(target[side] + Math.abs(diff));
   }
 
-  return transaction(() => {
-    const id = postJournal({
+  return transaction(async () => {
+    const id = (await postJournal({
       entity_id,
       journal_date,
       reference,
@@ -434,8 +411,8 @@ function createManualJournal({ entity_id, journal_date, reference, description, 
       source_type: 'manual',
       source_id: null,
       lines: baseLines,
-    });
-    return getJournal(id);
+    }));
+    return (await getJournal(id));
   });
 }
 
@@ -444,68 +421,48 @@ function createManualJournal({ entity_id, journal_date, reference, description, 
 const FULL_EDIT_SOURCES = ['manual', 'opening'];
 const SOURCE_NAMES = { invoice: 'an invoice', payment: 'a payment', bank: 'a bank statement line', asset: 'an asset purchase', depreciation: 'the depreciation run' };
 
-function getJournal(id) {
-  const j = db
-    .prepare(
-      `SELECT j.*, e.code AS entity_code, e.name AS entity_name, p.status AS period_status
-       FROM journals j JOIN entities e ON e.id = j.entity_id JOIN periods p ON p.period = j.period WHERE j.id = ?`
-    )
-    .get(id);
+async function getJournal(id) {
+  const j = (await db.get(`SELECT j.*, e.code AS entity_code, e.name AS entity_name, p.status AS period_status
+       FROM journals j JOIN entities e ON e.id = j.entity_id JOIN periods p ON p.period = j.period WHERE j.id = ?`, id));
   if (!j) return null;
-  const history = db.prepare('SELECT id, changed_at, summary FROM journal_audit WHERE journal_id = ? ORDER BY id DESC').all(id);
+  const history = (await db.all('SELECT id, changed_at, summary FROM journal_audit WHERE journal_id = ? ORDER BY id DESC', id));
   return {
     ...j,
     edit_mode: j.period_status === 'closed' ? 'locked' : FULL_EDIT_SOURCES.includes(j.source_type) ? 'full' : 'reclassify',
-    lines: ledgerEntriesForJournal(id),
+    lines: (await ledgerEntriesForJournal(id)),
     history,
   };
 }
 
-function ledgerEntriesForJournal(journalId) {
-  return db
-    .prepare(
-      `SELECT l.*, a.name AS account_name FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE l.journal_id = ? ORDER BY l.id`
-    )
-    .all(journalId);
+async function ledgerEntriesForJournal(journalId) {
+  return (await db.all(`SELECT l.*, a.name AS account_name FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
+       WHERE l.journal_id = ? ORDER BY l.id`, journalId));
 }
 
-function listJournals(entityId) {
+async function listJournals(entityId) {
   const E = entityOf(entityId);
-  return db
-    .prepare(
-      `SELECT j.*, e.code AS entity_code, COALESCE(SUM(l.debit), 0) AS total, COUNT(l.id) AS line_count
+  return (await db.all(`SELECT j.*, e.code AS entity_code, COALESCE(SUM(l.debit), 0) AS total, COUNT(l.id) AS line_count
        FROM journals j JOIN entities e ON e.id = j.entity_id LEFT JOIN ledger_entries l ON l.journal_id = j.id
-       WHERE (? IS NULL OR j.entity_id = ?)
-       GROUP BY j.id ORDER BY j.journal_date DESC, j.id DESC`
-    )
-    .all(E, E)
+       WHERE (?::int IS NULL OR j.entity_id = ?)
+       GROUP BY j.id, e.code ORDER BY j.journal_date DESC, j.id DESC`, E, E))
     .map((j) => ({ ...j, total: round2(j.total) }));
 }
 
-function listLedgerEntries(entityId) {
+async function listLedgerEntries(entityId) {
   const E = entityOf(entityId);
-  return db
-    .prepare(
-      `SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code
+  return (await db.all(`SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
        JOIN entities e ON e.id = l.entity_id
-       WHERE (? IS NULL OR l.entity_id = ?)
-       ORDER BY l.entry_date, l.id`
-    )
-    .all(E, E);
+       WHERE (?::int IS NULL OR l.entity_id = ?)
+       ORDER BY l.entry_date, l.id`, E, E));
 }
 
-function trialBalance(entityId) {
+async function trialBalance(entityId) {
   const E = entityOf(entityId);
-  return db
-    .prepare(
-      `SELECT l.account_code, a.name AS account_name, a.category, SUM(l.debit) AS debit, SUM(l.credit) AS credit
+  return (await db.all(`SELECT l.account_code, a.name AS account_name, a.category, SUM(l.debit) AS debit, SUM(l.credit) AS credit
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE (? IS NULL OR l.entity_id = ?)
-       GROUP BY l.account_code ORDER BY l.account_code`
-    )
-    .all(E, E)
+       WHERE (?::int IS NULL OR l.entity_id = ?)
+       GROUP BY l.account_code, a.name, a.category ORDER BY l.account_code`, E, E))
     .map((r) => ({
       account_code: r.account_code,
       account_name: r.account_name,
@@ -527,41 +484,40 @@ const INVOICE_KIND = { purchase: 'supplier', sale: 'customer' };
  * GBP amounts are translated per line; the GBP total is the sum of the
  * translated parts so the journal always balances to the penny.
  */
-function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, currency, exchange_rate, notes, lines }) {
+async function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, currency, exchange_rate, notes, lines }) {
   if (!INVOICE_KIND[type]) throw httpError(400, 'Invoice type must be purchase or sale');
-  const entity = requireEntity(entity_id);
-  const company = getCompany();
-  const party = getParty(INVOICE_KIND[type], party_id);
+  const entity = (await requireEntity(entity_id));
+  const company = (await getCompany());
+  const party = (await getParty(INVOICE_KIND[type], party_id));
   if (!party) throw httpError(400, `Unknown ${INVOICE_KIND[type]}`);
   if (!invoice_number || !invoice_date) throw httpError(400, 'Invoice number and date are required');
-  const dup = db
-    .prepare('SELECT 1 FROM invoices WHERE entity_id = ? AND type = ? AND party_id = ? AND invoice_number = ?')
-    .get(entity.id, type, party_id, String(invoice_number).trim());
+  const dup = (await db.get('SELECT 1 FROM invoices WHERE entity_id = ? AND type = ? AND party_id = ? AND invoice_number = ?', entity.id, type, party_id, String(invoice_number).trim()));
   if (dup) throw httpError(400, `Invoice ${invoice_number} from/to ${party.name} is already booked in ${entity.name}`);
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
   exchange_rate = currency === company.base_currency ? 1 : Number(exchange_rate);
   if (!(exchange_rate > 0)) throw httpError(400, 'Exchange rate must be a positive number');
   if (!Array.isArray(lines) || lines.length === 0) throw httpError(400, 'An invoice needs at least one line');
 
-  const parsed = lines.map((l, i) => {
+  const parsed = [];
+  for (const [i, l] of lines.entries()) {
     const net = round2(Number(l.net_amount));
     const vatRate = Number(l.vat_rate ?? 0);
     if (!(net >= 0)) throw httpError(400, `Line ${i + 1}: net amount must be zero or more`);
     if (!(vatRate >= 0 && vatRate <= 100)) throw httpError(400, `Line ${i + 1}: VAT rate must be between 0 and 100`);
-    const acc = requireAccount(l.account_code);
+    const acc = (await requireAccount(l.account_code));
     if (acc.role === ROLES.AP || acc.role === ROLES.AR || acc.category === 'cash') {
       throw httpError(400, `Line ${i + 1}: ${acc.code} ${acc.name} can't be used on an invoice line`);
     }
-    return {
+    parsed.push({
       description: l.description ? String(l.description).trim() : null,
       account_code: acc.code,
-      cost_center: resolveCostCenter(acc, l.cost_center),
+      cost_center: await resolveCostCenter(acc, l.cost_center),
       net_amount: net,
       vat_rate: vatRate,
       vat_amount: round2((net * vatRate) / 100),
       base_net: round2(net * exchange_rate),
-    };
-  });
+    });
+  }
 
   const net_amount = round2(parsed.reduce((s, l) => s + l.net_amount, 0));
   const vat_amount = round2(parsed.reduce((s, l) => s + l.vat_amount, 0));
@@ -571,20 +527,14 @@ function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date
   const base_total = round2(base_net + base_vat);
   if (!(total_amount > 0)) throw httpError(400, 'Invoice total must be more than zero');
 
-  return transaction(() => {
-    const info = db
-      .prepare(
-        `INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(type, entity.id, party_id, String(invoice_number).trim(), invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null);
+  return transaction(async () => {
+    const info = (await db.run(`INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, type, entity.id, party_id, String(invoice_number).trim(), invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null));
     const invoiceId = Number(info.lastInsertRowid);
-    const insertLine = db.prepare(
-      `INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    );
+    const insertLine = db.statement(`INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const l of parsed) {
-      l.id = Number(insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center).lastInsertRowid);
+      l.id = Number((await insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center)).lastInsertRowid);
     }
 
     const isPurchase = type === 'purchase';
@@ -602,7 +552,7 @@ function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date
     }));
     if (base_vat > 0) {
       journalLines.push({
-        account_code: accountByRole(isPurchase ? ROLES.VAT_IN : ROLES.VAT_OUT).code,
+        account_code: (await accountByRole(isPurchase ? ROLES.VAT_IN : ROLES.VAT_OUT)).code,
         [isPurchase ? 'debit' : 'credit']: base_vat,
         currency,
         fx_note: note(vat_amount),
@@ -610,81 +560,88 @@ function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date
       });
     }
     journalLines.push({
-      account_code: accountByRole(isPurchase ? ROLES.AP : ROLES.AR).code,
+      account_code: (await accountByRole(isPurchase ? ROLES.AP : ROLES.AR)).code,
       [isPurchase ? 'credit' : 'debit']: base_total,
       currency,
       fx_note: note(total_amount),
       description: desc,
     });
-    postJournal({ entity_id: entity.id, journal_date: invoice_date, reference: invoice_number, description: desc, source_type: 'invoice', source_id: invoiceId, lines: journalLines });
-    return getInvoice(invoiceId);
+    (await postJournal({ entity_id: entity.id, journal_date: invoice_date, reference: invoice_number, description: desc, source_type: 'invoice', source_id: invoiceId, lines: journalLines }));
+    return (await getInvoice(invoiceId));
   });
 }
 
+// Invoices with party, entity and payment totals in one query.
 function invoiceSelect(where) {
-  return `SELECT i.*, COALESCE(s.name, c.name) AS party_name, e.code AS entity_code, e.name AS entity_name
+  return `SELECT i.*, COALESCE(s.name, c.name) AS party_name, e.code AS entity_code, e.name AS entity_name,
+            COALESCE(p.paid, 0) AS sum_paid, COALESCE(p.paid_base, 0) AS sum_paid_base,
+            COALESCE(p.relieved, 0) AS sum_relieved, COALESCE(p.fx, 0) AS sum_fx
           FROM invoices i
           JOIN entities e ON e.id = i.entity_id
           LEFT JOIN suppliers s ON i.type = 'purchase' AND s.id = i.party_id
           LEFT JOIN customers c ON i.type = 'sale' AND c.id = i.party_id
+          LEFT JOIN (
+            SELECT invoice_id, SUM(amount) AS paid, SUM(base_cash) AS paid_base, SUM(base_relief) AS relieved, SUM(fx_gain_loss) AS fx
+            FROM payments GROUP BY invoice_id
+          ) p ON p.invoice_id = i.id
           ${where}`;
 }
 
-function getInvoice(id) {
-  const invoice = db.prepare(invoiceSelect('WHERE i.id = ?')).get(id);
+async function getInvoice(id) {
+  const invoice = await db.get(invoiceSelect('WHERE i.id = ?'), id);
   return invoice ? attachComputed(invoice) : null;
 }
 
-function listInvoices(type, entityId) {
+async function listInvoices(type, entityId) {
   const E = entityOf(entityId);
-  return db
-    .prepare(invoiceSelect('WHERE (? IS NULL OR i.type = ?) AND (? IS NULL OR i.entity_id = ?) ORDER BY i.invoice_date DESC, i.id DESC'))
-    .all(type || null, type || null, E, E)
-    .map(attachComputed);
+  return (
+    await db.all(
+      invoiceSelect('WHERE (?::text IS NULL OR i.type = ?) AND (?::int IS NULL OR i.entity_id = ?) ORDER BY i.invoice_date DESC, i.id DESC'),
+      type || null,
+      type || null,
+      E,
+      E
+    )
+  ).map(attachComputed);
 }
 
-function attachComputed(invoice) {
-  const sums = db
-    .prepare(
-      `SELECT COALESCE(SUM(amount), 0) AS paid, COALESCE(SUM(base_cash), 0) AS paid_base,
-              COALESCE(SUM(base_relief), 0) AS relieved, COALESCE(SUM(fx_gain_loss), 0) AS fx
-       FROM payments WHERE invoice_id = ?`
-    )
-    .get(invoice.id);
-  const remaining = round2(invoice.total_amount - sums.paid);
+/** Status and open amounts from the payment totals selected by invoiceSelect. */
+function attachComputed(row) {
+  const { sum_paid, sum_paid_base, sum_relieved, sum_fx, ...invoice } = row;
+  const remaining = round2(invoice.total_amount - sum_paid);
   let status = 'Open';
   if (remaining <= 0.005) status = 'Paid';
-  else if (sums.paid > 0.005) status = 'Partially Paid';
+  else if (sum_paid > 0.005) status = 'Partially Paid';
   return {
     ...invoice,
-    paid_amount: round2(sums.paid),
-    paid_base: round2(sums.paid_base),
+    paid_amount: round2(sum_paid),
+    paid_base: round2(sum_paid_base),
     remaining_amount: remaining,
     // Remaining liability/receivable at the rate it was booked at.
-    remaining_base: round2(invoice.base_total - sums.relieved),
-    realised_fx: round2(sums.fx),
+    remaining_base: round2(invoice.base_total - sum_relieved),
+    realised_fx: round2(sum_fx),
     status,
   };
 }
 
-function invoiceLines(invoiceId) {
-  return db
-    .prepare(
-      `SELECT il.*, a.name AS account_name FROM invoice_lines il JOIN accounts a ON a.code = il.account_code
-       WHERE il.invoice_id = ? ORDER BY il.id`
-    )
-    .all(invoiceId);
+async function invoiceLines(invoiceId) {
+  return (await db.all(`SELECT il.*, a.name AS account_name FROM invoice_lines il JOIN accounts a ON a.code = il.account_code
+       WHERE il.invoice_id = ? ORDER BY il.id`, invoiceId));
 }
 
-function invoiceDetail(id) {
-  const invoice = getInvoice(id);
+async function invoiceDetail(id) {
+  const invoice = (await getInvoice(id));
   if (!invoice) return null;
-  const payments = listPaymentsForInvoice(id);
-  const journalIds = [
-    ...db.prepare("SELECT id FROM journals WHERE source_type = 'invoice' AND source_id = ?").all(id).map((r) => r.id),
-    ...payments.flatMap((p) => db.prepare("SELECT id FROM journals WHERE source_type = 'payment' AND source_id = ?").all(p.id).map((r) => r.id)),
-  ];
-  return { invoice, lines: invoiceLines(id), payments, ledger: journalIds.flatMap(ledgerEntriesForJournal) };
+  const payments = (await listPaymentsForInvoice(id));
+  const journals = await db.all(
+    `SELECT id FROM journals
+     WHERE (source_type = 'invoice' AND source_id = ?) OR (source_type = 'payment' AND source_id IN (SELECT id FROM payments WHERE invoice_id = ?))
+     ORDER BY journal_date, id`,
+    id,
+    id
+  );
+  const ledger = (await Promise.all(journals.map((j) => ledgerEntriesForJournal(j.id)))).flat();
+  return { invoice, lines: await invoiceLines(id), payments, ledger };
 }
 
 // ---------- Payments & receipts ----------
@@ -701,14 +658,14 @@ function invoiceDetail(id) {
  *   purchase: Dr AP (booked)  / Cr Bank (actual)  / FX gain (Cr) or loss (Dr)
  *   sale:     Dr Bank (actual) / Cr AR (booked)   / FX gain (Cr) or loss (Dr)
  */
-function createPayment({ invoice_id, payment_date, amount, bank_account, bank_amount, bank_rate, notes }) {
-  const company = getCompany();
-  const invoice = getInvoice(invoice_id);
+async function createPayment({ invoice_id, payment_date, amount, bank_account, bank_amount, bank_rate, notes }) {
+  const company = (await getCompany());
+  const invoice = (await getInvoice(invoice_id));
   if (!invoice) throw httpError(400, 'Unknown invoice');
   if (!payment_date) throw httpError(400, 'Payment date is required');
-  const bank = getAccount(bank_account);
+  const bank = (await getAccount(bank_account));
   if (!bank || !bank.bank_currency) throw httpError(400, 'Choose a bank account');
-  assertAccountForEntity(bank, invoice.entity_id);
+  (await assertAccountForEntity(bank, invoice.entity_id));
   amount = round2(Number(amount));
   if (!(amount > 0)) throw httpError(400, 'Amount settled must be a positive number');
   if (amount > invoice.remaining_amount + 0.005) {
@@ -727,17 +684,13 @@ function createPayment({ invoice_id, payment_date, amount, bank_account, bank_am
   const isPurchase = invoice.type === 'purchase';
   const fx_gain_loss = round2(isPurchase ? base_relief - base_cash : base_cash - base_relief);
 
-  return transaction(() => {
-    const info = db
-      .prepare(
-        `INSERT INTO payments (invoice_id, payment_date, amount, bank_account, bank_currency, bank_amount, bank_rate, base_relief, base_cash, fx_gain_loss, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(invoice_id, payment_date, amount, bank.code, bank.bank_currency, bank_amount, bank_rate, base_relief, base_cash, fx_gain_loss, notes || null);
+  return transaction(async () => {
+    const info = (await db.run(`INSERT INTO payments (invoice_id, payment_date, amount, bank_account, bank_currency, bank_amount, bank_rate, base_relief, base_cash, fx_gain_loss, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, invoice_id, payment_date, amount, bank.code, bank.bank_currency, bank_amount, bank_rate, base_relief, base_cash, fx_gain_loss, notes || null));
     const paymentId = Number(info.lastInsertRowid);
 
     const desc = `${isPurchase ? 'Payment' : 'Receipt'} ${amount.toFixed(2)} ${invoice.currency} - ${isPurchase ? 'purchase' : 'sales'} invoice ${invoice.invoice_number} (${invoice.party_name})`;
-    const partyAcc = accountByRole(isPurchase ? ROLES.AP : ROLES.AR).code;
+    const partyAcc = (await accountByRole(isPurchase ? ROLES.AP : ROLES.AR)).code;
     const reliefNote = invoice.currency === company.base_currency ? null : `${amount.toFixed(2)} ${invoice.currency} @ ${invoice.exchange_rate} (booked rate)`;
     const cashNote = bank.bank_currency === company.base_currency ? null : `${bank_amount.toFixed(2)} ${bank.bank_currency} @ ${bank_rate}`;
     const lines = [
@@ -745,11 +698,11 @@ function createPayment({ invoice_id, payment_date, amount, bank_account, bank_am
       { account_code: bank.code, [isPurchase ? 'credit' : 'debit']: base_cash, currency: bank.bank_currency, fx_note: cashNote, description: desc },
     ];
     if (fx_gain_loss > 0) {
-      lines.push({ account_code: accountByRole(ROLES.FX_GAIN).code, credit: fx_gain_loss, description: `${desc} - FX gain` });
+      lines.push({ account_code: (await accountByRole(ROLES.FX_GAIN)).code, credit: fx_gain_loss, description: `${desc} - FX gain` });
     } else if (fx_gain_loss < 0) {
-      lines.push({ account_code: accountByRole(ROLES.FX_LOSS).code, debit: -fx_gain_loss, description: `${desc} - FX loss` });
+      lines.push({ account_code: (await accountByRole(ROLES.FX_LOSS)).code, debit: -fx_gain_loss, description: `${desc} - FX loss` });
     }
-    const journalId = postJournal({
+    const journalId = (await postJournal({
       entity_id: invoice.entity_id,
       journal_date: payment_date,
       reference: invoice.invoice_number,
@@ -757,18 +710,14 @@ function createPayment({ invoice_id, payment_date, amount, bank_account, bank_am
       source_type: 'payment',
       source_id: paymentId,
       lines,
-    });
-    return { payment: db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId), journal_id: journalId, invoice: getInvoice(invoice_id) };
+    }));
+    return { payment: (await db.get('SELECT * FROM payments WHERE id = ?', paymentId)), journal_id: journalId, invoice: (await getInvoice(invoice_id)) };
   });
 }
 
-function listPaymentsForInvoice(invoice_id) {
-  return db
-    .prepare(
-      `SELECT p.*, a.name AS bank_account_name FROM payments p JOIN accounts a ON a.code = p.bank_account
-       WHERE p.invoice_id = ? ORDER BY p.payment_date, p.id`
-    )
-    .all(invoice_id);
+async function listPaymentsForInvoice(invoice_id) {
+  return (await db.all(`SELECT p.*, a.name AS bank_account_name FROM payments p JOIN accounts a ON a.code = p.bank_account
+       WHERE p.invoice_id = ? ORDER BY p.payment_date, p.id`, invoice_id));
 }
 
 // ---------- Financial statements ----------
@@ -814,20 +763,16 @@ function plTotals(t) {
  * liabilities/equity/income as credits). A cost centre filter narrows the
  * P&L only; the balance sheet and cash flow always cover the whole company.
  */
-function financialStatements({ from, to, cost_center, entity_id }) {
+async function financialStatements({ from, to, cost_center, entity_id }) {
   checkRange(from, to);
   const E = entityOf(entity_id);
 
-  const rows = db
-    .prepare(
-      `SELECT a.code, a.name, a.category,
+  const rows = (await db.all(`SELECT a.code, a.name, a.category,
          COALESCE(SUM(CASE WHEN ${OPENING_SQL} THEN l.debit - l.credit END), 0) AS opening,
          COALESCE(SUM(CASE WHEN ${MOVEMENT_SQL} THEN l.debit - l.credit END), 0) AS movement
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (? IS NULL OR l.entity_id = ?)
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id = ?)
        LEFT JOIN journals j ON j.id = l.journal_id
-       GROUP BY a.code ORDER BY a.code`
-    )
-    .all(from, to, from, to, E, E)
+       GROUP BY a.code ORDER BY a.code`, from, to, from, to, E, E))
     .map((r) => ({ ...r, opening: round2(r.opening), movement: round2(r.movement), closing: round2(r.opening + r.movement) }));
 
   const signFor = (cat) => (cat.side === 'asset' || cat.side === 'expense' ? 1 : -1);
@@ -848,12 +793,8 @@ function financialStatements({ from, to, cost_center, entity_id }) {
   if (cost_center) {
     const f = costCenterFilter(cost_center);
     const filtered = Object.fromEntries(
-      db
-        .prepare(
-          `SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
-           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (? IS NULL OR l.entity_id = ?)${f.sql} GROUP BY l.account_code`
-        )
-        .all(from, to, E, E, ...f.params)
+      (await db.all(`SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
+           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)${f.sql} GROUP BY l.account_code`, from, to, E, E, ...f.params))
         .map((r) => [r.code, round2(r.movement)])
     );
     plMovement = (r) => filtered[r.code] || 0;
@@ -905,7 +846,7 @@ function financialStatements({ from, to, cost_center, entity_id }) {
     to,
     opening_date: dayBefore(from),
     cost_center: cost_center || null,
-    entity: E ? getEntity(E) : null,
+    entity: E ? (await getEntity(E)) : null,
     profit_and_loss: {
       ...pl,
       ...totals,
@@ -935,19 +876,15 @@ function financialStatements({ from, to, cost_center, entity_id }) {
  * P&L per cost centre for a period: one column per cost centre (plus
  * "unallocated"), one row per P&L category, with the subtotals.
  */
-function costCenterReport({ from, to, entity_id }) {
+async function costCenterReport({ from, to, entity_id }) {
   checkRange(from, to);
   const E = entityOf(entity_id);
-  const rows = db
-    .prepare(
-      `SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
+  const rows = (await db.all(`SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE l.entry_date >= ? AND l.entry_date <= ? AND (? IS NULL OR l.entity_id = ?)
-       GROUP BY cc, a.category`
-    )
-    .all(from, to, E, E);
+       WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)
+       GROUP BY cc, a.category`, from, to, E, E));
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
-  const columns = [...listCostCenters().map((c) => ({ code: c.code, name: c.name })), { code: '', name: 'Unallocated' }];
+  const columns = [...(await listCostCenters()).map((c) => ({ code: c.code, name: c.name })), { code: '', name: 'Unallocated' }];
   const byCc = {};
   for (const col of columns) byCc[col.code] = Object.fromEntries(plCats.map((c) => [c.key, 0]));
   for (const r of rows) {
@@ -971,9 +908,11 @@ const ratio = (a, b) => (b ? Math.round((a / b) * 10000) / 10000 : null);
  * Financial KPIs for a period: profitability, liquidity, solvency and
  * working capital, plus a monthly trend and costs per cost centre.
  */
-function kpis({ from, to, entity_id }) {
+async function kpis({ from, to, entity_id }) {
   const E = entityOf(entity_id);
-  const fs = financialStatements({ from, to, entity_id: E });
+  const fs = await financialStatements({ from, to, entity_id: E });
+  const fxGainCode = (await accountByRole(ROLES.FX_GAIN)).code;
+  const fxLossCode = (await accountByRole(ROLES.FX_LOSS)).code;
   const pl = fs.profit_and_loss;
   const bs = fs.balance_sheet.closing;
   const cat = (list, key) => (list.find((g) => g.key === key) || { total: 0 }).total;
@@ -986,28 +925,18 @@ function kpis({ from, to, entity_id }) {
   const days = daysBetween(from, to);
 
   // Invoiced amounts (incl. VAT, in GBP) for the period, to compare with AR/AP balances.
-  const invoiced = (type) =>
-    db
-      .prepare('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ? AND (? IS NULL OR entity_id = ?)')
-      .get(type, from, to, E, E).t;
-  const salesInvoiced = invoiced('sale');
-  const purchasesInvoiced = invoiced('purchase');
+  const invoiced = async (type) =>
+    (await db.get('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ? AND (?::int IS NULL OR entity_id = ?)', type, from, to, E, E)).t;
+  const salesInvoiced = (await invoiced('sale'));
+  const purchasesInvoiced = (await invoiced('purchase'));
 
   // Monthly trend
-  const monthRows = db
-    .prepare(
-      `SELECT substr(l.entry_date, 1, 7) AS period, a.category, SUM(l.debit - l.credit) AS movement
+  const monthRows = (await db.all(`SELECT substr(l.entry_date, 1, 7) AS period, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE ${MOVEMENT_SQL} AND (? IS NULL OR l.entity_id = ?)
-       GROUP BY period, a.category`
-    )
-    .all(from, to, E, E);
-  const cashBefore = db
-    .prepare(
-      `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE a.category = 'cash' AND ${OPENING_SQL} AND (? IS NULL OR l.entity_id = ?)`
-    )
-    .get(from, to, E, E).t;
+       WHERE ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id = ?)
+       GROUP BY substr(l.entry_date, 1, 7), a.category`, from, to, E, E));
+  const cashBefore = (await db.get(`SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
+       WHERE a.category = 'cash' AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id = ?)`, from, to, E, E)).t;
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
   const months = [];
   let runningCash = cashBefore;
@@ -1024,7 +953,7 @@ function kpis({ from, to, entity_id }) {
   }
 
   // Operating costs (cost of sales, overheads, depreciation) per cost centre
-  const ccReport = costCenterReport({ from, to, entity_id: E });
+  const ccReport = (await costCenterReport({ from, to, entity_id: E }));
   const cost_by_cost_center = ccReport.cost_centers
     .map((c) => ({ code: c.code, name: c.name, costs: round2(c.cost_of_sales + c.overheads + c.depreciation) }))
     .filter((c) => c.costs !== 0)
@@ -1041,8 +970,8 @@ function kpis({ from, to, entity_id }) {
     net_result: pl.net_result,
     depreciation: pl.depreciation.total,
     fx_result: round2(
-      (pl.financial_income.accounts.find((a) => a.code === accountByRole(ROLES.FX_GAIN).code)?.amount || 0) -
-        (pl.financial_expenses.accounts.find((a) => a.code === accountByRole(ROLES.FX_LOSS).code)?.amount || 0)
+      (pl.financial_income.accounts.find((a) => a.code === fxGainCode)?.amount || 0) -
+        (pl.financial_expenses.accounts.find((a) => a.code === fxLossCode)?.amount || 0)
     ),
     gross_margin: ratio(pl.gross_profit, pl.revenue.total),
     ebitda_margin: ratio(pl.ebitda, pl.revenue.total),
@@ -1102,19 +1031,19 @@ function describeChanges(before, after) {
  *     description can change and P&L lines can move to another P&L account
  *     and/or cost centre (a reclassification). An invoice line follows along.
  */
-function editJournal(id, data) {
-  const j = getJournal(id);
+async function editJournal(id, data) {
+  const j = (await getJournal(id));
   if (!j) throw httpError(404, 'Journal not found');
   if (j.edit_mode === 'locked') throw httpError(400, `Period ${j.period} is closed - reopen it in Setup to change this journal`);
   const before = journalSnapshot(j);
   const description = data.description !== undefined ? String(data.description).trim() : j.description;
   if (!description) throw httpError(400, 'Description is required');
 
-  return transaction(() => {
+  return transaction(async () => {
     if (j.edit_mode === 'full') {
       const date = data.journal_date || j.journal_date;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw httpError(400, 'Journal date is required');
-      const period = assertPeriodOpen(date);
+      const period = (await assertPeriodOpen(date));
       if (!Array.isArray(data.lines)) throw httpError(400, 'Journal lines are required');
       const oldById = Object.fromEntries(j.lines.map((l) => [l.id, l]));
       const posted = data.lines
@@ -1135,44 +1064,40 @@ function editJournal(id, data) {
           };
         })
         .filter((l) => l.debit !== 0 || l.credit !== 0);
-      checkJournalLines(posted, j.entity_id);
-      db.prepare('DELETE FROM ledger_entries WHERE journal_id = ?').run(id);
-      insertLedgerLines(id, j.entity_id, date, description, posted);
-      db.prepare('UPDATE journals SET journal_date = ?, period = ?, reference = ?, description = ? WHERE id = ?').run(
-        date,
+      (await checkJournalLines(posted, j.entity_id));
+      (await db.run('DELETE FROM ledger_entries WHERE journal_id = ?', id));
+      (await insertLedgerLines(id, j.entity_id, date, description, posted));
+      (await db.run('UPDATE journals SET journal_date = ?, period = ?, reference = ?, description = ? WHERE id = ?', date,
         period,
         data.reference !== undefined ? String(data.reference).trim() || null : j.reference,
         description,
-        id
-      );
+        id));
     } else {
       const byId = Object.fromEntries(j.lines.map((l) => [l.id, l]));
       for (const change of data.lines || []) {
         const line = byId[change.id];
         if (!line) throw httpError(400, 'Unknown journal line');
-        const oldAcc = getAccount(line.account_code);
-        const newAcc = requireAccount(change.account_code || line.account_code);
+        const oldAcc = (await getAccount(line.account_code));
+        const newAcc = (await requireAccount(change.account_code || line.account_code));
         if (newAcc.code !== oldAcc.code && (oldAcc.statement !== 'PL' || newAcc.statement !== 'PL')) {
           throw httpError(400, `This journal comes from ${SOURCE_NAMES[j.source_type] || 'a source document'}: only its P&L lines can move to another P&L account, ${oldAcc.code} ${oldAcc.name} follows the document`);
         }
-        assertAccountForEntity(newAcc, j.entity_id);
-        const cc = resolveCostCenter(newAcc, change.cost_center);
-        db.prepare('UPDATE ledger_entries SET account_code = ?, cost_center = ? WHERE id = ?').run(newAcc.code, cc, line.id);
+        (await assertAccountForEntity(newAcc, j.entity_id));
+        const cc = (await resolveCostCenter(newAcc, change.cost_center));
+        (await db.run('UPDATE ledger_entries SET account_code = ?, cost_center = ? WHERE id = ?', newAcc.code, cc, line.id));
         if (line.invoice_line_id) {
-          db.prepare('UPDATE invoice_lines SET account_code = ?, cost_center = ? WHERE id = ?').run(newAcc.code, cc, line.invoice_line_id);
+          (await db.run('UPDATE invoice_lines SET account_code = ?, cost_center = ? WHERE id = ?', newAcc.code, cc, line.invoice_line_id));
         }
       }
-      db.prepare('UPDATE journals SET description = ? WHERE id = ?').run(description, id);
+      (await db.run('UPDATE journals SET description = ? WHERE id = ?', description, id));
     }
-    const after = journalSnapshot(getJournal(id));
-    db.prepare("UPDATE journals SET edit_count = edit_count + 1, edited_at = datetime('now') WHERE id = ?").run(id);
-    db.prepare('INSERT INTO journal_audit (journal_id, summary, before_json, after_json) VALUES (?, ?, ?, ?)').run(
-      id,
+    const after = journalSnapshot((await getJournal(id)));
+    (await db.run("UPDATE journals SET edit_count = edit_count + 1, edited_at = ? WHERE id = ?", nowText(), id));
+    (await db.run('INSERT INTO journal_audit (journal_id, summary, before_json, after_json) VALUES (?, ?, ?, ?)', id,
       describeChanges(before, after),
       JSON.stringify(before),
-      JSON.stringify(after)
-    );
-    return getJournal(id);
+      JSON.stringify(after)));
+    return (await getJournal(id));
   });
 }
 
@@ -1184,30 +1109,22 @@ function editJournal(id, data) {
  * Amounts are also given with the account's natural sign (debit-positive for
  * assets and costs, credit-positive for liabilities, equity and income).
  */
-function accountDetail(code, { from, to, entity_id, cost_center }) {
-  const account = getAccount(code);
+async function accountDetail(code, { from, to, entity_id, cost_center }) {
+  const account = (await getAccount(code));
   if (!account) throw httpError(404, 'Account not found');
   checkRange(from, to);
   const E = entityOf(entity_id);
   const f = costCenterFilter(cost_center);
   const sign = account.side === 'asset' || account.side === 'expense' ? 1 : -1;
   const opening = round2(
-    db
-      .prepare(
-        `SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN journals j ON j.id = l.journal_id
-         WHERE l.account_code = ? AND ${OPENING_SQL} AND (? IS NULL OR l.entity_id = ?)${f.sql}`
-      )
-      .get(code, from, to, E, E, ...f.params).t
+    (await db.get(`SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN journals j ON j.id = l.journal_id
+         WHERE l.account_code = ? AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id = ?)${f.sql}`, code, from, to, E, E, ...f.params)).t
   );
-  const entries = db
-    .prepare(
-      `SELECT l.id, l.journal_id, l.entry_date, l.debit, l.credit, l.description, l.cost_center, l.fx_note,
+  const entries = (await db.all(`SELECT l.id, l.journal_id, l.entry_date, l.debit, l.credit, l.description, l.cost_center, l.fx_note,
               j.reference, j.source_type, e.code AS entity_code
        FROM ledger_entries l JOIN journals j ON j.id = l.journal_id JOIN entities e ON e.id = l.entity_id
-       WHERE l.account_code = ? AND ${MOVEMENT_SQL} AND (? IS NULL OR l.entity_id = ?)${f.sql}
-       ORDER BY l.entry_date, l.id`
-    )
-    .all(code, from, to, E, E, ...f.params);
+       WHERE l.account_code = ? AND ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id = ?)${f.sql}
+       ORDER BY l.entry_date, l.id`, code, from, to, E, E, ...f.params));
   let running = opening;
   for (const e of entries) {
     running = round2(running + e.debit - e.credit);
@@ -1225,12 +1142,12 @@ function accountDetail(code, { from, to, entity_id, cost_center }) {
     }
     return Object.values(out).map((g) => ({ ...g, net: round2(sign * (g.debit - g.credit)) }));
   };
-  const ccNames = Object.fromEntries(listCostCenters().map((c) => [c.code, c.name]));
+  const ccNames = Object.fromEntries((await listCostCenters()).map((c) => [c.code, c.name]));
   return {
     account,
     from,
     to,
-    entity: E ? getEntity(E) : null,
+    entity: E ? (await getEntity(E)) : null,
     cost_center: cost_center || null,
     sign,
     opening,
@@ -1247,10 +1164,10 @@ function accountDetail(code, { from, to, entity_id, cost_center }) {
 
 // ---------- Dashboard ----------
 
-function dashboardSummary(entityId) {
+async function dashboardSummary(entityId) {
   const E = entityOf(entityId);
-  const company = getCompany();
-  const invoices = listInvoices(null, E);
+  const company = (await getCompany());
+  const invoices = (await listInvoices(null, E));
   const summarise = (type) => {
     const list = invoices.filter((i) => i.type === type);
     const open = list.filter((i) => i.status !== 'Paid');
@@ -1264,16 +1181,14 @@ function dashboardSummary(entityId) {
     }
     return { total_invoices: list.length, open_invoices: open.length, outstanding_base: round2(open.reduce((s, i) => s + i.remaining_base, 0)), by_currency };
   };
-  const tb = trialBalance(E);
+  const tb = (await trialBalance(E));
   const tbDebit = round2(tb.reduce((s, r) => s + r.debit, 0));
   const tbCredit = round2(tb.reduce((s, r) => s + r.credit, 0));
   const cash = round2(tb.filter((r) => r.category === 'cash').reduce((s, r) => s + r.balance, 0));
-  const realisedFx = db
-    .prepare('SELECT COALESCE(SUM(p.fx_gain_loss), 0) AS t FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE (? IS NULL OR i.entity_id = ?)')
-    .get(E, E).t;
+  const realisedFx = (await db.get('SELECT COALESCE(SUM(p.fx_gain_loss), 0) AS t FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE (?::int IS NULL OR i.entity_id = ?)', E, E)).t;
   return {
     company,
-    entity: E ? getEntity(E) : null,
+    entity: E ? (await getEntity(E)) : null,
     payables: summarise('purchase'),
     receivables: summarise('sale'),
     cash_balance: cash,

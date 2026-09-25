@@ -50,13 +50,22 @@ async function fetchRange(start, end) {
       if (!(v > 0)) continue;
       (perEur[f[iDate]] ||= {})[f[iCcy]] = v;
     }
-    const upsert = db.prepare("INSERT OR REPLACE INTO fx_rates (rate_date, currency, rate_to_base, source) VALUES (?, ?, ?, 'ECB')");
+    const values = [];
     let days = 0;
     for (const [date, r] of Object.entries(perEur)) {
       if (!r.GBP) continue;
-      upsert.run(date, 'EUR', r.GBP);
-      if (r.USD) upsert.run(date, 'USD', Math.round((r.GBP / r.USD) * 1e6) / 1e6);
+      values.push([date, 'EUR', r.GBP]);
+      if (r.USD) values.push([date, 'USD', Math.round((r.GBP / r.USD) * 1e6) / 1e6]);
       days++;
+    }
+    // One statement per 200 rates: over a network database, row-by-row inserts are slow.
+    for (let i = 0; i < values.length; i += 200) {
+      const chunk = values.slice(i, i + 200);
+      await db.run(
+        `INSERT INTO fx_rates (rate_date, currency, rate_to_base, source) VALUES ${chunk.map(() => "(?, ?, ?, 'ECB')").join(', ')}
+         ON CONFLICT (rate_date, currency) DO UPDATE SET rate_to_base = excluded.rate_to_base, source = excluded.source RETURNING rate_date`,
+        ...chunk.flat()
+      );
     }
     status.last_success = new Date().toISOString();
     status.last_error = null;
@@ -67,11 +76,9 @@ async function fetchRange(start, end) {
   }
 }
 
-function storedRate(currency, date) {
+async function storedRate(currency, date) {
   if (currency === BASE) return { currency, rate: 1, rate_date: date, source: 'base currency' };
-  const row = db
-    .prepare('SELECT rate_date, rate_to_base FROM fx_rates WHERE currency = ? AND rate_date <= ? ORDER BY rate_date DESC LIMIT 1')
-    .get(currency, date);
+  const row = (await db.get('SELECT rate_date, rate_to_base FROM fx_rates WHERE currency = ? AND rate_date <= ? ORDER BY rate_date DESC LIMIT 1', currency, date));
   return row ? { currency, rate: row.rate_to_base, rate_date: row.rate_date, source: 'ECB' } : null;
 }
 
@@ -80,7 +87,7 @@ function storedRate(currency, date) {
  * the last one published before it. Fetches from the ECB if it isn't stored yet.
  */
 async function getRate(currency, date) {
-  let r = storedRate(currency, date);
+  let r = (await storedRate(currency, date));
   const today = isoDate(new Date());
   const lookup = date > today ? today : date;
   // Stale if the nearest stored rate is more than a long weekend before the date asked for.
@@ -90,14 +97,14 @@ async function getRate(currency, date) {
     } catch (err) {
       console.error('ECB rate fetch failed:', err.message);
     }
-    r = storedRate(currency, date);
+    r = (await storedRate(currency, date));
   }
   return r;
 }
 
 /** Pull everything since the last stored rate (or the past ~13 months on an empty table). */
 async function updateLatest() {
-  const last = db.prepare('SELECT MAX(rate_date) AS d FROM fx_rates').get().d;
+  const last = (await db.get('SELECT MAX(rate_date) AS d FROM fx_rates')).d;
   const today = isoDate(new Date());
   const start = last || addDays(today, -400);
   const days = await fetchRange(start, today);
@@ -105,12 +112,12 @@ async function updateLatest() {
   return days;
 }
 
-function latestRates() {
-  return ['EUR', 'USD'].map((c) => storedRate(c, '9999-12-31')).filter(Boolean);
+async function latestRates() {
+  return (await Promise.all(['EUR', 'USD'].map((c) => storedRate(c, '9999-12-31')))).filter(Boolean);
 }
 
-function getStatus() {
-  const count = db.prepare('SELECT COUNT(DISTINCT rate_date) AS n, MIN(rate_date) AS first, MAX(rate_date) AS last FROM fx_rates').get();
+async function getStatus() {
+  const count = (await db.get('SELECT COUNT(DISTINCT rate_date) AS n, MIN(rate_date) AS first, MAX(rate_date) AS last FROM fx_rates'));
   return { ...status, days_stored: count.n, first_date: count.first, last_date: count.last, update_every_hours: UPDATE_EVERY_MS / 3600000 };
 }
 
