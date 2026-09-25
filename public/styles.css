@@ -70,6 +70,8 @@ body {
 .tab.active { background: var(--blue-bg); color: var(--brand); }
 
 main#app { max-width: 1180px; margin: 0 auto; padding: 24px; }
+/* Anything marked hidden stays hidden, even when a class gives it a display style (e.g. the login screen). */
+[hidden] { display: none !important; }
 .view[hidden] { display: none; }
 
 .cards {
