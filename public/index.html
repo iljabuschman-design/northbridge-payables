@@ -562,6 +562,7 @@
       <p>The Pay button opens a <strong>simulated</strong> bank payment window: choose the account to pay from and your bank, "log in" and approve. No real bank is contacted and no money moves; approving books the payment on the invoice as if the bank executed it today. When paying from an account in another currency, the bank converts at today's ECB rate and the difference with the invoice's booked rate is a realised FX gain or loss. Real payments would need an FCA-authorised Open Banking payment initiation provider (e.g. TrueLayer or Yapily), which can later replace the simulated bank behind the same button. A payment made this way would also appear on the next real bank statement; that statement line is then already settled and should be posted against accounts payable or left out.</p>
 
       <h3>Invoice recognition</h3>
+      <p>For each supplier you can also <strong>mark where a field is</strong>: with the PDF shown next to the form, click a field (invoice number, dates, description, net amount or total) and drag a box around its value on the PDF. The app reads the text in the box and fills the field; when the invoice is saved, the position is stored for that supplier and next time that spot is read first, before any label rules. Positions are kept as fractions of the page, so they work whatever size the PDF is shown at, but they assume that supplier's layout stays the same.</p>
       <p>Supplier invoices can be uploaded as PDF (Purchase invoices → Upload invoice PDF, or drop the file on the page). The browser reads the PDF's text with pdf.js; the server then recognises the supplier (by VAT number, IBAN, bank account, name or learned letterhead), invoice number, invoice and due date, currency, net, VAT and total, and suggests a VAT code from the rate. It uses built-in labels in English, German, French and Dutch. When the invoice is saved, the app compares what was saved with what it suggested and learns per supplier: the labels that supplier uses, its date format, its currency, its letterhead and how its invoices are booked. The PDF is kept with the invoice. Scanned PDFs without a text layer can't be read (that would need OCR or an AI service). Amounts per invoice line aren't split out yet: the net amount goes on one line.</p>
 
       <h3>VAT codes</h3>
@@ -582,7 +583,8 @@
 <dialog id="dialog-invoice" class="wide">
   <div class="invoice-layout">
   <div class="invoice-preview" id="invoice-preview" hidden>
-    <iframe title="Uploaded invoice" id="invoice-preview-frame"></iframe>
+    <div class="teach-bar" id="teach-bar"></div>
+    <div class="pdf-pages" id="pdf-pages"></div>
   </div>
   <form id="form-invoice" class="form">
     <h2 id="invoice-dialog-title">New invoice</h2>
@@ -618,7 +620,10 @@
         <tbody></tbody>
       </table>
     </div>
-    <div><button type="button" class="btn btn-small" id="btn-add-invoice-line">+ Add line</button></div>
+    <div class="row lines-footer">
+      <div><button type="button" class="btn btn-small" id="btn-add-invoice-line">+ Add line</button></div>
+      <label class="pdf-total" id="pdf-total-wrap" hidden>Total on the invoice <input name="pdf_total" type="number" step="0.01" min="0" /></label>
+    </div>
     <p class="hint totals" id="invoice-total-hint"></p>
     <label>Notes <input name="notes" maxlength="200" /></label>
     <p class="error" id="invoice-error"></p>

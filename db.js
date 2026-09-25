@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS documents (
   size INTEGER NOT NULL,
   data BLOB NOT NULL,
   text_lines TEXT,
+  items_json TEXT,
   suggestion_json TEXT,
   invoice_id INTEGER REFERENCES invoices(id),
   uploaded_by TEXT,

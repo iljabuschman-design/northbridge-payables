@@ -213,6 +213,7 @@ const routes = [
 
   // Invoice recognition (uploaded PDFs)
   { method: 'POST', pattern: /^\/api\/recognition\/extract$/, handler: json((body, m, q, req) => recognition.recognise(body, req.user)) },
+  { method: 'POST', pattern: /^\/api\/recognition\/read-zone$/, handler: json((body) => recognition.readZone(body)) },
   { method: 'GET', pattern: /^\/api\/recognition\/profiles$/, handler: async () => recognition.listProfiles() },
   { method: 'DELETE', pattern: /^\/api\/recognition\/profiles\/(\d+)$/, handler: async (req, m) => recognition.forgetProfile(m[1]) },
   {

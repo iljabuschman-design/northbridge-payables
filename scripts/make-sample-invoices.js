@@ -184,4 +184,16 @@ if (require.main === module) {
   }
 }
 
-module.exports = { invoices, textLines, makePdf };
+/** Text items with their box as fractions of the page (from the top left), like the app's PDF reader sends. */
+function textItems(items) {
+  return items.map(([x, y, text, size = 10]) => ({
+    p: 1,
+    x: x / 595,
+    y: (y - size) / 842,
+    w: (text.length * size * 0.5) / 595,
+    h: size / 842,
+    s: text,
+  }));
+}
+
+module.exports = { invoices, textLines, textItems, makePdf };

@@ -1214,6 +1214,7 @@ async function updateVatCode(code, { description, rate, purchase_account, sales_
 async function setUpVatCodes() {
   await db.addColumn('invoice_lines', 'vat_code', 'TEXT');
   await db.addColumn('invoices', 'due_date', 'TEXT');
+  await db.addColumn('documents', 'items_json', 'TEXT');
   if (!(await getCompany())) return; // empty database: seeding comes first
   if ((await db.get('SELECT COUNT(*) AS n FROM vat_codes')).n > 0) return;
   await transaction(async () => {

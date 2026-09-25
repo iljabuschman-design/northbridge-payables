@@ -581,10 +581,14 @@ async function openInvoiceDialog(type, suggestion = null) {
   document.getElementById('invoice-preview').hidden = !recognition;
   document.getElementById('recognition-banner').hidden = !recognition;
   dlg.classList.toggle('with-preview', Boolean(recognition));
-  document.getElementById('invoice-preview-frame').src = recognition ? recognition.fileUrl : 'about:blank';
-  invoiceForm.querySelectorAll('.rec-learned, .rec-generic, .rec-guess, .rec-missing').forEach((el) => el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing'));
+  document.getElementById('pdf-total-wrap').hidden = !recognition;
+  invoiceForm.querySelectorAll('.rec-learned, .rec-generic, .rec-guess, .rec-missing, .rec-taught, .teach-active').forEach((el) => el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing', 'rec-taught', 'teach-active'));
   if (suggestion) applySuggestion(suggestion);
   dlg.showModal();
+  if (recognition) {
+    setTeachField(null);
+    renderPdfPreview().catch((err) => setTeachHint(`The PDF could not be shown: ${esc(err.message)}`, true));
+  }
 }
 
 document.querySelectorAll('[data-new-invoice]').forEach((btn) => btn.addEventListener('click', () => openInvoiceDialog(btn.dataset.newInvoice)));
@@ -680,6 +684,7 @@ invoiceForm.addEventListener('submit', async (e) => {
     notes: invoiceForm.notes.value.trim(),
     lines: invoiceLinesFromForm().map(({ row, ...l }) => l),
     document_id: recognition ? recognition.document_id : null,
+    zones: recognition ? recognition.zones : null,
   };
   try {
     const saved = await post('/api/invoices', payload);
@@ -2591,24 +2596,32 @@ document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventLi
 // ---------- Invoice recognition (upload a PDF) ----------
 
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-let recognition = null; // { document_id, suggestion, fileUrl } while an invoice is made from a PDF
+let recognition = null; // { document_id, suggestion, pdf, zones, active } while an invoice is made from a PDF
 
 /**
- * The PDF's text as lines in reading order (top to bottom, left to right).
- * Text separated by a wide gap on the same line is a different column: joined with " | ".
+ * Read a PDF with pdf.js: its text as lines in reading order (columns split
+ * by " | ") and every text item with its box as fractions of the page (from
+ * the top left). The loaded document is kept to draw the pages next to the form.
  */
-async function pdfTextLines(buffer) {
+async function pdfRead(buffer) {
   const pdfjs = window.pdfjsLib;
   if (!pdfjs) throw new Error('The PDF reader could not be loaded - check your internet connection');
   pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
   const doc = await pdfjs.getDocument({ data: buffer }).promise;
   const lines = [];
+  const items = [];
   for (let p = 1; p <= Math.min(doc.numPages, 5); p++) {
-    const content = await (await doc.getPage(p)).getTextContent();
+    const page = await doc.getPage(p);
+    const vp = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
     const rows = [];
     for (const it of content.items) {
       if (!it.str || !it.str.trim()) continue;
       const [x, y] = [it.transform[4], it.transform[5]];
+      const h = Math.hypot(it.transform[2], it.transform[3]) || it.height || 10;
+      // Top-left corner and size in page fractions.
+      const [left, top] = vp.convertToViewportPoint(x, y + h);
+      items.push({ p, x: left / vp.width, y: top / vp.height, w: it.width / vp.width, h: h / vp.height, s: it.str });
       let row = rows.find((r) => Math.abs(r.y - y) < 3);
       if (!row) rows.push((row = { y, items: [] }));
       row.items.push({ x, end: x + it.width, s: it.str });
@@ -2626,7 +2639,7 @@ async function pdfTextLines(buffer) {
       lines.push(line.replace(/\s+/g, ' ').trim());
     }
   }
-  return lines;
+  return { doc, lines, items };
 }
 
 function fileToBase64(file) {
@@ -2654,21 +2667,184 @@ async function recogniseFile(file) {
   if (file.size > 3 * 1024 * 1024) return showNotice('The PDF is larger than 3 MB.', 'bad');
   status.textContent = `Reading ${file.name}…`;
   try {
-    const [base64, lines] = await Promise.all([fileToBase64(file), file.arrayBuffer().then(pdfTextLines)]);
+    const [base64, read] = await Promise.all([fileToBase64(file), file.arrayBuffer().then(pdfRead)]);
     status.textContent = 'Recognising…';
     const s = await post('/api/recognition/extract', {
       filename: file.name,
       pdf_base64: base64,
-      lines,
+      lines: read.lines,
+      items: read.items.map((i) => ({ ...i, x: +i.x.toFixed(5), y: +i.y.toFixed(5), w: +i.w.toFixed(5), h: +i.h.toFixed(5) })),
       entity_id: Number(CURRENT_ENTITY || META.entities[0].id),
     });
     status.textContent = '';
-    if (recognition && recognition.fileUrl) URL.revokeObjectURL(recognition.fileUrl);
-    recognition = { document_id: s.document_id, suggestion: s, fileUrl: URL.createObjectURL(file), filename: file.name };
+    recognition = { document_id: s.document_id, suggestion: s, pdf: read.doc, filename: file.name, zones: {}, active: null };
     await openInvoiceDialog('purchase', s);
   } catch (err) {
     status.textContent = '';
     showNotice(`Could not read ${file.name}: ${err.message}`, 'bad');
+  }
+}
+
+// ----- Teaching positions: click a field, then drag a box on the PDF -----
+
+const FIELD_LABEL = {
+  invoice_number: 'invoice number',
+  invoice_date: 'invoice date',
+  due_date: 'due date',
+  description: 'description',
+  net: 'net amount',
+  vat: 'VAT amount',
+  total: 'total',
+};
+const firstLine = (sel) => document.querySelector(`#invoice-lines tbody tr ${sel}`);
+const TEACH_FIELDS = {
+  invoice_number: () => invoiceForm.invoice_number,
+  invoice_date: () => invoiceForm.invoice_date,
+  due_date: () => invoiceForm.due_date,
+  description: () => firstLine('.l-desc'),
+  net: () => firstLine('.l-net'),
+  total: () => invoiceForm.pdf_total,
+};
+
+function setTeachHint(html, warn = false) {
+  const bar = document.getElementById('teach-bar');
+  bar.innerHTML = html;
+  bar.classList.toggle('warn', warn);
+}
+
+const DEFAULT_TEACH_HINT =
+  'To teach the app where something is on this supplier’s invoices: click a field on the right (invoice number, dates, description, net amount or total), then drag a box around its value here.';
+
+function setTeachField(field) {
+  recognition.active = field;
+  document.querySelectorAll('.teach-active').forEach((el) => el.classList.remove('teach-active'));
+  const el = field && TEACH_FIELDS[field]();
+  if (el) el.classList.add('teach-active');
+  setTeachHint(field ? `📍 Now drag a box around the <strong>${FIELD_LABEL[field]}</strong> on the invoice.` : DEFAULT_TEACH_HINT);
+}
+
+// Clicking a teachable field while a PDF is shown makes it the field to teach.
+invoiceForm.addEventListener('focusin', (e) => {
+  if (!recognition) return;
+  const field = Object.keys(TEACH_FIELDS).find((k) => TEACH_FIELDS[k]() === e.target);
+  if (field) setTeachField(field);
+});
+
+/** Draw the PDF's pages next to the form, with the marked positions on top. */
+async function renderPdfPreview() {
+  const box = document.getElementById('pdf-pages');
+  box.replaceChildren();
+  const doc = recognition.pdf;
+  // Leave room for the padding and a vertical scrollbar.
+  const width = Math.max(300, (box.clientWidth || 560) - 40);
+  for (let p = 1; p <= Math.min(doc.numPages, 5); p++) {
+    const page = await doc.getPage(p);
+    const vp = page.getViewport({ scale: width / page.getViewport({ scale: 1 }).width });
+    const ratio = window.devicePixelRatio || 1;
+    const wrap = document.createElement('div');
+    wrap.className = 'pdf-page';
+    wrap.style.width = `${vp.width}px`;
+    wrap.style.height = `${vp.height}px`;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(vp.width * ratio);
+    canvas.height = Math.floor(vp.height * ratio);
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-overlay';
+    overlay.dataset.page = p;
+    wrap.append(canvas, overlay);
+    box.appendChild(wrap);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: page.getViewport({ scale: vp.scale * ratio }) }).promise;
+    bindZoneDrawing(overlay, p);
+  }
+  drawZones();
+}
+
+function placeBox(el, z) {
+  el.style.left = `${z.x0 * 100}%`;
+  el.style.top = `${z.y0 * 100}%`;
+  el.style.width = `${(z.x1 - z.x0) * 100}%`;
+  el.style.height = `${(z.y1 - z.y0) * 100}%`;
+}
+
+/** Show learned positions (dashed green) and the ones marked now (purple), labelled by field. */
+function drawZones() {
+  document.querySelectorAll('.pdf-overlay .zone').forEach((z) => z.remove());
+  const all = [
+    ...Object.entries(recognition.suggestion.zones || {}).filter(([f]) => !recognition.zones[f]).map(([f, z]) => [f, z, 'learned']),
+    ...Object.entries(recognition.zones).map(([f, z]) => [f, z, 'taught']),
+  ];
+  for (const [field, z, kind] of all) {
+    const overlay = document.querySelector(`.pdf-overlay[data-page="${z.page}"]`);
+    if (!overlay) continue;
+    const el = document.createElement('div');
+    el.className = `zone ${kind}`;
+    placeBox(el, z);
+    const tag = document.createElement('span');
+    tag.textContent = FIELD_LABEL[field] || field;
+    el.appendChild(tag);
+    overlay.appendChild(el);
+  }
+}
+
+function bindZoneDrawing(overlay, page) {
+  overlay.addEventListener('pointerdown', (e) => {
+    if (!recognition.active) {
+      setTeachHint('First click the field on the right you want to teach, then draw a box around its value here.', true);
+      return;
+    }
+    e.preventDefault();
+    const r = overlay.getBoundingClientRect();
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    const sx = clamp((e.clientX - r.left) / r.width);
+    const sy = clamp((e.clientY - r.top) / r.height);
+    const rect = document.createElement('div');
+    rect.className = 'zone drawing';
+    overlay.appendChild(rect);
+    overlay.setPointerCapture(e.pointerId);
+    let zone = null;
+    const move = (ev) => {
+      const x = clamp((ev.clientX - r.left) / r.width);
+      const y = clamp((ev.clientY - r.top) / r.height);
+      zone = { page, x0: Math.min(sx, x), y0: Math.min(sy, y), x1: Math.max(sx, x), y1: Math.max(sy, y) };
+      placeBox(rect, zone);
+    };
+    const up = () => {
+      overlay.removeEventListener('pointermove', move);
+      overlay.removeEventListener('pointerup', up);
+      rect.remove();
+      if (zone && zone.x1 - zone.x0 > 0.004 && zone.y1 - zone.y0 > 0.004) teachZone(recognition.active, zone);
+    };
+    overlay.addEventListener('pointermove', move);
+    overlay.addEventListener('pointerup', up);
+  });
+}
+
+/** Read the value inside the drawn box, put it in the field and remember the box for saving. */
+async function teachZone(field, zone) {
+  try {
+    const res = await post('/api/recognition/read-zone', {
+      document_id: recognition.document_id,
+      field,
+      zone,
+      supplier_id: Number(invoiceForm.party_id.value) || null,
+    });
+    if (res.value === null || res.value === undefined) {
+      setTeachHint(`No ${FIELD_LABEL[field]} found in that box (it contains: “${esc(res.text || 'nothing')}”). Try a slightly bigger box.`, true);
+      return;
+    }
+    const el = TEACH_FIELDS[field]();
+    const shown = typeof res.value === 'number' ? res.value.toFixed(2) : res.value;
+    el.value = shown;
+    el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing', 'teach-active');
+    el.classList.add('rec-taught');
+    el.title = 'Read from the box you drew - remembered for this supplier when you save';
+    recognition.zones[field] = res.zone;
+    recognition.active = null;
+    updateInvoiceTotals();
+    drawZones();
+    setTeachHint(`✓ ${FIELD_LABEL[field][0].toUpperCase() + FIELD_LABEL[field].slice(1)} set to <strong>${esc(shown)}</strong>; its position is remembered for this supplier when you save. Click another field to teach more.`);
+  } catch (err) {
+    setTeachHint(esc(err.message), true);
   }
 }
 
@@ -2703,7 +2879,7 @@ const SOURCE_TEXT = {
 const sourceClass = (src) => (src === 'learned' ? 'rec-learned' : src === 'guess' || src === 'default' ? 'rec-guess' : 'rec-generic');
 
 function mark(el, field) {
-  el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing');
+  el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing', 'rec-taught');
   el.removeAttribute('title');
   if (!recognition) return;
   const f = field ? recognition.suggestion[field] : null;
@@ -2749,6 +2925,8 @@ function applySuggestion(s) {
   mark(f.invoice_number, 'invoice_number');
   mark(f.invoice_date, 'invoice_date');
   if (s.due_date) mark(f.due_date, 'due_date');
+  f.pdf_total.value = s.total ? s.total.value.toFixed(2) : '';
+  mark(f.pdf_total, 'total');
   mark(f.currency, 'currency');
   refreshInvoiceRate();
   updateInvoiceTotals();
@@ -2762,13 +2940,13 @@ function applySuggestion(s) {
     <div>Read <strong>${esc(recognition.filename)}</strong>: ${who}. ${history}</div>
     ${s.no_text ? '<div class="neg">This PDF has no text layer (probably a scan), so nothing could be read - please fill in the invoice.</div>' : ''}
     ${s.total && s.total.mismatch ? '<div class="neg">The net and VAT on the invoice don’t add up to its total - please check the amounts.</div>' : ''}
-    <div class="legend"><span class="rec-learned">learned</span> <span class="rec-generic">recognised</span> <span class="rec-guess">please check</span> <span class="rec-missing">not found</span> - hover a field to see why. Correct anything wrong, then save.</div>`;
+    <div class="legend"><span class="rec-learned">learned</span> <span class="rec-generic">recognised</span> <span class="rec-guess">please check</span> <span class="rec-missing">not found</span> <span class="rec-taught">marked on the PDF</span> - hover a field to see why. Correct anything wrong (type it, or click the field and draw a box on the PDF), then save.</div>`;
 }
 
 /** Totals the form will book vs the total printed on the invoice. */
 function recognitionTotalCheck(formTotal) {
-  if (!recognition || !recognition.suggestion.total) return '';
-  const t = recognition.suggestion.total.value;
+  const t = recognition ? parseFloat(invoiceForm.pdf_total.value) : NaN;
+  if (!Number.isFinite(t)) return '';
   const ok = Math.abs(t - formTotal) < 0.005;
   return ` · invoice says ${fmt(t, invoiceForm.currency.value)} <strong class="${ok ? 'pos' : 'neg'}">${ok ? '✓' : '≠ check the lines'}</strong>`;
 }
@@ -2790,7 +2968,7 @@ async function loadRecognitionProfiles() {
         <td class="num">${p.documents}</td>
         <td class="num">${p.accuracy === null ? '' : Math.round(p.accuracy * 100) + '%'}</td>
         <td>${p.last ? `${p.last.correct}/${p.last.checked} right${p.last.corrected.length ? ` <span class="muted">(corrected: ${esc(p.last.corrected.join(', ').replace(/_/g, ' '))})</span>` : ''}` : ''}</td>
-        <td class="muted">${esc(labelText(p.labels))}${p.date_order ? ` · dates ${p.date_order === 'MDY' ? 'm/d/y' : 'd/m/y'}` : ''}</td>
+        <td class="muted">${esc(labelText(p.labels))}${p.date_order ? ` · dates ${p.date_order === 'MDY' ? 'm/d/y' : 'd/m/y'}` : ''}${p.zones.length ? ` · <strong>positions:</strong> ${esc(p.zones.map((z) => FIELD_LABEL[z] || z).join(', '))}` : ''}</td>
         <td class="muted">${p.defaults ? esc(`${p.defaults.account_code}${p.defaults.cost_center ? ' / ' + p.defaults.cost_center : ''}${p.defaults.vat_code ? ' / ' + p.defaults.vat_code : ''}`) : ''}</td>
         <td class="admin-only"><button type="button" class="btn btn-small" data-forget="${p.supplier_id}">Forget</button></td>
       </tr>`

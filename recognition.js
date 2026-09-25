@@ -15,7 +15,13 @@
  *   - its date order (day/month vs month/day) and currency,
  *   - text that identifies the supplier (e.g. its letterhead),
  *   - how its invoices are booked (GL account, cost centre, VAT code, description),
- *   - how many fields were right, so accuracy per supplier can be shown.
+ *   - how many fields were right, so accuracy per supplier can be shown,
+ *   - and where on the page a field is, when the user marked it by dragging a
+ *     box on the PDF (a "zone"). Zones are tried before any label rule.
+ *
+ * Text positions come from the browser too: each text item with its page and
+ * its box as fractions of the page (0-1, measured from the top left), so a
+ * zone means the same place whatever size the PDF is drawn at.
  */
 
 const { db, round2 } = require('./db');
@@ -25,6 +31,8 @@ const { httpError } = acct;
 
 const MAX_PDF_BYTES = 3 * 1024 * 1024;
 const FIELDS = ['supplier', 'invoice_number', 'invoice_date', 'due_date', 'currency', 'net', 'vat', 'total'];
+// Fields whose position can be taught by marking them on the PDF.
+const ZONE_FIELDS = ['invoice_number', 'invoice_date', 'due_date', 'description', 'net', 'vat', 'total'];
 
 // Generic labels (English, German, French, Dutch), most specific first.
 const LABELS = {
@@ -178,6 +186,61 @@ function scoreSupplier(s, text, profile) {
   return { score, reasons };
 }
 
+// ---------- zones (positions marked on the PDF) ----------
+
+function cleanItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, 4000)
+    .map((i) => ({ p: Number(i.p) || 1, x: +i.x, y: +i.y, w: +i.w, h: +i.h, s: String(i.s || '').slice(0, 200) }))
+    .filter((i) => [i.x, i.y, i.w, i.h].every(Number.isFinite) && i.s.trim());
+}
+
+function cleanZone(z) {
+  if (!z) return null;
+  const n = (v) => Math.min(1, Math.max(0, Number(v)));
+  const zone = { page: Math.max(1, Math.floor(Number(z.page) || 1)), x0: n(Math.min(z.x0, z.x1)), y0: n(Math.min(z.y0, z.y1)), x1: n(Math.max(z.x0, z.x1)), y1: n(Math.max(z.y0, z.y1)) };
+  return zone.x1 - zone.x0 > 0.003 && zone.y1 - zone.y0 > 0.003 ? zone : null;
+}
+
+/** The text inside a zone: items whose middle lies in it (with a little slack), in reading order. */
+function zoneText(items, zone) {
+  const slack = 0.006;
+  const inside = items
+    .filter((i) => i.p === zone.page)
+    .filter((i) => {
+      const cx = i.x + i.w / 2;
+      const cy = i.y + i.h / 2;
+      return cx >= zone.x0 - slack && cx <= zone.x1 + slack && cy >= zone.y0 - slack && cy <= zone.y1 + slack;
+    })
+    .sort((a, b) => (Math.abs(a.y - b.y) < 0.005 ? a.x - b.x : a.y - b.y));
+  let text = '';
+  let lastY = null;
+  for (const i of inside) {
+    if (lastY !== null) text += Math.abs(i.y - lastY) < 0.005 ? ' ' : '\n';
+    text += i.s;
+    lastY = i.y;
+  }
+  return text.trim();
+}
+
+/** Read one field's value from a piece of text, the same way the label rules do. */
+function parseField(field, text, order) {
+  if (!text) return null;
+  if (field === 'invoice_number') {
+    return pickNumber(text) || (text.split(/\s+/).find((t) => /\d/.test(t)) || '').replace(/^[#:]+|[.,:]+$/g, '') || null;
+  }
+  if (field === 'invoice_date' || field === 'due_date') {
+    const d = findDates(text, order)[0];
+    return d ? d.iso : null;
+  }
+  if (field === 'net' || field === 'vat' || field === 'total') {
+    const a = findAmounts(text);
+    return a.length ? a[a.length - 1].value : null;
+  }
+  if (field === 'description') return text.replace(/\s+/g, ' ').trim().slice(0, 120) || null;
+  return null;
+}
+
 // ---------- field extraction ----------
 
 /** Find the value for a field next to one of its labels: same line after the label, or the next line. */
@@ -208,16 +271,21 @@ const pickNumber = (text) => {
   return m && /\d/.test(m[1]) ? m[1].replace(/[.,]$/, '') : null;
 };
 
-function extractFields(lines, profile, preferOrder) {
+function extractFields(lines, profile, preferOrder, zoneValues = {}) {
   const learned = (profile && profile.labels) || {};
   const result = {};
+  // Values read from positions the user marked on this supplier's invoices come first.
+  for (const [field, value] of Object.entries(zoneValues)) {
+    if (field !== 'description') result[field] = { value, source: 'learned', label: 'its marked position on the invoice', zone: true };
+  }
   const labelsFor = (field) => [...(learned[field] || []), ...LABELS[field]];
   const source = (field, hit) => (hit && (learned[field] || []).includes(hit.label) ? 'learned' : 'generic');
 
-  const num = byLabel(lines, labelsFor('invoice_number'), pickNumber);
+  const num = result.invoice_number ? null : byLabel(lines, labelsFor('invoice_number'), pickNumber);
   if (num) result.invoice_number = { value: num.value, source: source('invoice_number', num), label: num.label };
 
   for (const field of ['invoice_date', 'due_date']) {
+    if (result[field]) continue;
     const hit = byLabel(lines, labelsFor(field), (t) => {
       const d = findDates(t, preferOrder)[0];
       return d ? d : null;
@@ -231,6 +299,7 @@ function extractFields(lines, profile, preferOrder) {
   }
 
   for (const field of ['net', 'vat', 'total']) {
+    if (result[field]) continue;
     const hit = byLabel(lines, labelsFor(field), (t, line) => {
       if (NOT_AMOUNT_LINE.test(line)) return null;
       const amounts = findAmounts(t);
@@ -276,7 +345,7 @@ async function getProfile(supplierId) {
 }
 
 async function saveProfile(supplierId, profile, stats) {
-  const json = JSON.stringify({ labels: profile.labels, date_order: profile.date_order, currency: profile.currency, aliases: profile.aliases, defaults: profile.defaults, last: profile.last });
+  const json = JSON.stringify({ labels: profile.labels, date_order: profile.date_order, currency: profile.currency, aliases: profile.aliases, defaults: profile.defaults, zones: profile.zones, last: profile.last });
   const existing = await db.get('SELECT supplier_id FROM vendor_profiles WHERE supplier_id = ?', supplierId);
   if (existing) {
     await db.run(
@@ -308,6 +377,7 @@ async function listProfiles() {
       currency: p.currency || null,
       aliases: p.aliases || [],
       defaults: p.defaults || null,
+      zones: Object.keys(p.zones || {}),
       updated_at: r.updated_at,
     };
   });
@@ -324,7 +394,7 @@ async function forgetProfile(supplierId) {
  * Store an uploaded PDF and suggest the invoice fields.
  *   pdf_base64: the file; lines: its text in reading order (from pdf.js in the browser).
  */
-async function recognise({ filename, pdf_base64, lines, entity_id }, user) {
+async function recognise({ filename, pdf_base64, lines, items, entity_id }, user) {
   const entity = await acct.requireEntity(entity_id);
   const pdf = Buffer.from(String(pdf_base64 || ''), 'base64');
   if (!pdf.length) throw httpError(400, 'The file is empty');
@@ -332,6 +402,7 @@ async function recognise({ filename, pdf_base64, lines, entity_id }, user) {
   if (pdf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'This is not a PDF file');
   const textLines = (Array.isArray(lines) ? lines : []).map((l) => String(l).replace(/\s+/g, ' ').trim().slice(0, 500)).slice(0, 400);
   const text = textLines.join('\n');
+  const textItems = cleanItems(items);
 
   const suppliers = await acct.listParties('supplier');
   const profiles = Object.fromEntries((await db.all('SELECT supplier_id, profile_json FROM vendor_profiles')).map((r) => [r.supplier_id, JSON.parse(r.profile_json)]));
@@ -342,7 +413,13 @@ async function recognise({ filename, pdf_base64, lines, entity_id }, user) {
 
   // Suppliers from the US write month/day; learned order wins, otherwise guess from the country.
   const preferOrder = (profile && profile.date_order) || (supplier && /united states|usa/i.test(supplier.country || '') ? 'MDY' : 'DMY');
-  const f = extractFields(textLines, profile, preferOrder);
+  const zones = (profile && profile.zones) || {};
+  const zoneValues = {};
+  for (const [field, zone] of Object.entries(zones)) {
+    const v = parseField(field, zoneText(textItems, zone), preferOrder);
+    if (v !== null) zoneValues[field] = v;
+  }
+  const f = extractFields(textLines, profile, preferOrder, zoneValues);
   const currency = detectCurrency(text, supplier, profile);
 
   // VAT code from the rate (VAT / net), otherwise the supplier's usual code.
@@ -358,7 +435,7 @@ async function recognise({ filename, pdf_base64, lines, entity_id }, user) {
 
   const net = f.net ? f.net.value : f.total ? f.total.value : 0;
   const line = {
-    description: (defaults && defaults.description) || (f.invoice_number ? `Invoice ${f.invoice_number.value}` : 'Invoice'),
+    description: zoneValues.description || (defaults && defaults.description) || (f.invoice_number ? `Invoice ${f.invoice_number.value}` : 'Invoice'),
     account_code: (defaults && defaults.account_code) || '5000',
     cost_center: (defaults && defaults.cost_center) || null,
     vat_code: vatCode ? vatCode.value : null,
@@ -378,17 +455,19 @@ async function recognise({ filename, pdf_base64, lines, entity_id }, user) {
     vat_code: vatCode,
     lines: [line],
     no_text: textLines.join('').trim().length === 0,
+    zones,
     profile: profile ? { documents: profile.documents, accuracy: profile.fields_checked ? round2(profile.fields_correct / profile.fields_checked) : null } : null,
   };
 
   const { row } = await db.run(
-    'INSERT INTO documents (entity_id, filename, content_type, size, data, text_lines, suggestion_json, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO documents (entity_id, filename, content_type, size, data, text_lines, items_json, suggestion_json, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     entity.id,
     String(filename || 'invoice.pdf').slice(0, 200),
     'application/pdf',
     pdf.length,
     pdf,
     JSON.stringify(textLines),
+    JSON.stringify(textItems),
     JSON.stringify(suggestion),
     user ? user.name : null
   );
@@ -528,9 +607,34 @@ async function learnFromInvoice(documentId, invoice, payload) {
     if (def.description && def.description.includes(final.invoice_number)) def.description = null;
     profile.defaults = def;
   }
+  // Positions the user marked on the PDF: tried first next time.
+  profile.zones = profile.zones || {};
+  for (const [field, z] of Object.entries(payload.zones || {})) {
+    const zone = ZONE_FIELDS.includes(field) && cleanZone(z);
+    if (!zone) continue;
+    profile.zones[field] = zone;
+    learned.push(`${field.replace('_', ' ')} is at the position you marked (page ${zone.page})`);
+  }
   profile.last = { correct: checked.length - corrected.length, checked: checked.length, corrected, at: new Date().toISOString().slice(0, 10) };
   await saveProfile(supplierId, profile, { checked: checked.length, correct: checked.length - corrected.length });
   return { supplier_id: supplierId, checked: checked.length, correct: checked.length - corrected.length, corrected, learned };
+}
+
+/**
+ * Read the text in a box the user just drew on the PDF and the value for the
+ * field it was drawn for (the zone is remembered when the invoice is saved).
+ */
+async function readZone({ document_id, field, zone, supplier_id }) {
+  if (!ZONE_FIELDS.includes(field)) throw httpError(400, 'This field can\'t be marked on the invoice');
+  const z = cleanZone(zone);
+  if (!z) throw httpError(400, 'Draw a box around the value on the invoice');
+  const doc = await db.get('SELECT items_json FROM documents WHERE id = ?', Number(document_id));
+  if (!doc) throw httpError(404, 'Document not found');
+  const profile = supplier_id ? await getProfile(Number(supplier_id)) : null;
+  const supplier = supplier_id ? await acct.getParty('supplier', Number(supplier_id)) : null;
+  const order = (profile && profile.date_order) || (supplier && /united states|usa/i.test(supplier.country || '') ? 'MDY' : 'DMY');
+  const text = zoneText(JSON.parse(doc.items_json || '[]'), z);
+  return { field, zone: z, text, value: parseField(field, text, order) };
 }
 
 async function getDocument(id) {
@@ -541,4 +645,4 @@ async function documentForInvoice(invoiceId) {
   return db.get('SELECT id, filename, size, created_at FROM documents WHERE invoice_id = ? ORDER BY id DESC LIMIT 1', Number(invoiceId));
 }
 
-module.exports = { recognise, learnFromInvoice, listProfiles, forgetProfile, getDocument, documentForInvoice, findDates, findAmounts };
+module.exports = { recognise, learnFromInvoice, readZone, listProfiles, forgetProfile, getDocument, documentForInvoice, findDates, findAmounts, zoneText };
