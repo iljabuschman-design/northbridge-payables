@@ -1015,6 +1015,135 @@ async function kpis({ from, to, entity_id }) {
   };
 }
 
+// ---------- Deleting ----------
+// Deleting keeps the books consistent: a journal that belongs to a document
+// (invoice, payment, asset purchase) is deleted together with that document,
+// nothing in a closed period can be deleted, and every deletion is logged
+// with a copy of what was deleted.
+
+async function logDeletion(what, reference, summary, snapshot, by) {
+  await db.run(
+    'INSERT INTO deletions (what, reference, summary, snapshot_json, deleted_by) VALUES (?, ?, ?, ?, ?)',
+    what, reference || null, summary, JSON.stringify(snapshot), by || null
+  );
+}
+
+async function assertPeriodOpenFor(date, what) {
+  const p = await db.get('SELECT status FROM periods WHERE period = ?', periodOf(date));
+  if (p && p.status === 'closed') throw httpError(400, `${what} is in closed period ${periodOf(date)} - reopen it in Setup first`);
+}
+
+/** Remove a journal, its lines and history; a bank line it posted becomes "to post" again. */
+async function removeJournal(journalId) {
+  await db.run('UPDATE bank_statement_lines SET journal_id = NULL, payment_id = NULL, auto_settled = 0 WHERE journal_id = ?', journalId);
+  await db.run('DELETE FROM journal_audit WHERE journal_id = ?', journalId);
+  await db.run('DELETE FROM ledger_entries WHERE journal_id = ?', journalId);
+  await db.run('DELETE FROM journals WHERE id = ?', journalId);
+}
+
+async function deletePayment(paymentId, by) {
+  const p = await db.get('SELECT * FROM payments WHERE id = ?', Number(paymentId));
+  if (!p) throw httpError(404, 'Payment not found');
+  const invoice = await getInvoice(p.invoice_id);
+  await assertPeriodOpenFor(p.payment_date, 'This payment');
+  return transaction(async () => {
+    const journals = await db.all("SELECT id FROM journals WHERE source_type = 'payment' AND source_id = ?", p.id);
+    const snapshot = { payment: p, journals: await Promise.all(journals.map((j) => getJournal(j.id))) };
+    await db.run('UPDATE bank_statement_lines SET journal_id = NULL, payment_id = NULL, auto_settled = 0 WHERE payment_id = ?', p.id);
+    for (const j of journals) await removeJournal(j.id);
+    await db.run('DELETE FROM payments WHERE id = ?', p.id);
+    const summary = `Payment of ${p.amount.toFixed(2)} ${invoice.currency} on invoice ${invoice.invoice_number} (${invoice.party_name}) - the invoice is open again`;
+    await logDeletion('payment', invoice.invoice_number, summary, snapshot, by);
+    return { deleted: summary };
+  });
+}
+
+async function deleteInvoice(id, by) {
+  const invoice = await getInvoice(Number(id));
+  if (!invoice) throw httpError(404, 'Invoice not found');
+  const payments = await listPaymentsForInvoice(invoice.id);
+  if (payments.length) {
+    throw httpError(400, `Invoice ${invoice.invoice_number} has ${payments.length} payment(s): delete those first (open the payment's journal and delete it)`);
+  }
+  const filed = await db.get(
+    'SELECT period_key FROM vat_returns WHERE entity_id = ? AND period_start <= ? AND period_end >= ?',
+    invoice.entity_id, invoice.invoice_date, invoice.invoice_date
+  );
+  if (filed) throw httpError(400, `Invoice ${invoice.invoice_number} is part of a filed VAT return (${filed.period_key}) and can't be deleted`);
+  await assertPeriodOpenFor(invoice.invoice_date, `Invoice ${invoice.invoice_number}`);
+  return transaction(async () => {
+    const snapshot = await invoiceDetail(invoice.id);
+    const journals = await db.all("SELECT id FROM journals WHERE source_type = 'invoice' AND source_id = ?", invoice.id);
+    for (const j of journals) await removeJournal(j.id);
+    await db.run('UPDATE documents SET invoice_id = NULL WHERE invoice_id = ?', invoice.id);
+    await db.run('DELETE FROM invoice_lines WHERE invoice_id = ?', invoice.id);
+    await db.run('DELETE FROM invoices WHERE id = ?', invoice.id);
+    const summary = `${invoice.type === 'sale' ? 'Sales' : 'Purchase'} invoice ${invoice.invoice_number} (${invoice.party_name}) and its journal`;
+    await logDeletion('invoice', invoice.invoice_number, summary, snapshot, by);
+    return { deleted: summary };
+  });
+}
+
+/** Delete a journal - or, when it belongs to a document, that document with it. */
+async function deleteJournal(id, by) {
+  const j = await getJournal(Number(id));
+  if (!j) throw httpError(404, 'Journal not found');
+  if (j.period_status === 'closed') throw httpError(400, `Period ${j.period} is closed - reopen it in Setup to delete this journal`);
+  if (j.source_type === 'invoice') return deleteInvoice(j.source_id, by);
+  if (j.source_type === 'payment') return deletePayment(j.source_id, by);
+  if (j.source_type === 'depreciation') {
+    throw httpError(400, 'Depreciation is booked automatically every month from the asset register, so it would simply be booked again - it cannot be deleted');
+  }
+  return transaction(async () => {
+    let extra = '';
+    if (j.source_type === 'asset') {
+      const asset = await db.get('SELECT * FROM fixed_assets WHERE acquisition_journal_id = ?', j.id);
+      if (asset) {
+        const booked = await db.get('SELECT COUNT(*) AS n FROM asset_depreciation WHERE asset_id = ?', asset.id);
+        if (booked.n) throw httpError(400, `Asset ${asset.asset_number} already has depreciation booked, so its purchase can't be deleted`);
+        await db.run('DELETE FROM fixed_assets WHERE id = ?', asset.id);
+        extra = ` and asset ${asset.asset_number} ${asset.name}`;
+      }
+    }
+    await removeJournal(j.id);
+    const summary = `Journal ${j.reference || j.id} (${j.description})${extra}`;
+    await logDeletion('journal', j.reference, summary, j, by);
+    return { deleted: summary };
+  });
+}
+
+async function deleteParty(kind, id, by) {
+  const party = await getParty(kind, Number(id));
+  if (!party) throw httpError(404, `${kind} not found`);
+  const used = await db.get('SELECT COUNT(*) AS n FROM invoices WHERE type = ? AND party_id = ?', kind === 'supplier' ? 'purchase' : 'sale', party.id);
+  if (used.n) throw httpError(400, `${party.name} has ${used.n} invoice(s), so it can't be deleted`);
+  return transaction(async () => {
+    if (kind === 'supplier') await db.run('DELETE FROM vendor_profiles WHERE supplier_id = ?', party.id);
+    await db.run(`DELETE FROM ${PARTY_TABLE[kind]} WHERE id = ?`, party.id);
+    await logDeletion(kind, party.name, `${kind === 'supplier' ? 'Supplier' : 'Customer'} ${party.name}`, party, by);
+    return { deleted: `${kind === 'supplier' ? 'Supplier' : 'Customer'} ${party.name}` };
+  });
+}
+
+async function deleteAccount(code, by) {
+  const a = await getAccount(code);
+  if (!a) throw httpError(404, 'Account not found');
+  if (a.role) throw httpError(400, `${a.code} ${a.name} is used by the app itself (${a.role.replace(/_/g, ' ')}) and can't be deleted`);
+  const checks = [
+    ['SELECT COUNT(*) AS n FROM ledger_entries WHERE account_code = ?', 'has bookings'],
+    ['SELECT COUNT(*) AS n FROM invoice_lines WHERE account_code = ?', 'is used on invoice lines'],
+    ['SELECT COUNT(*) AS n FROM vat_codes WHERE purchase_account = ? OR sales_account = ?', 'is linked to a VAT code'],
+    ['SELECT COUNT(*) AS n FROM bank_statements WHERE bank_account = ?', 'has bank statements'],
+  ];
+  for (const [sql, why] of checks) {
+    const params = sql.includes('OR') ? [a.code, a.code] : [a.code];
+    if ((await db.get(sql, ...params)).n) throw httpError(400, `${a.code} ${a.name} ${why}, so it can't be deleted`);
+  }
+  await db.run('DELETE FROM accounts WHERE code = ?', a.code);
+  await logDeletion('account', a.code, `Account ${a.code} ${a.name}`, a, by);
+  return { deleted: `Account ${a.code} ${a.name}` };
+}
+
 // ---------- VAT codes ----------
 
 async function listVatCodes() {
@@ -1342,6 +1471,11 @@ module.exports = {
   assertAccountForEntity,
   editJournal,
   accountDetail,
+  deleteJournal,
+  deleteInvoice,
+  deletePayment,
+  deleteParty,
+  deleteAccount,
   listVatCodes,
   getVatCode,
   createVatCode,

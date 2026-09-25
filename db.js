@@ -124,6 +124,17 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   vat_code TEXT
 );
 
+-- Everything deleted, with a copy of what it looked like (deletions can't be undone in the app).
+CREATE TABLE IF NOT EXISTS deletions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  what TEXT NOT NULL,
+  reference TEXT,
+  summary TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  deleted_by TEXT,
+  deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Uploaded invoice documents (PDF), their text and what recognition suggested.
 CREATE TABLE IF NOT EXISTS documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,7 +357,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'deletions', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();

@@ -461,3 +461,10 @@ table.table tbody tr:hover { background: #f5f9ff; }
 table.fin tr.grand td { background: var(--blue-bg); }
 .login-card .brand-name { color: var(--navy); }
 .login-card .brand-sub { color: var(--muted); }
+
+/* Delete buttons (admin only) */
+.btn-delete { color: var(--red); border-color: #f1c7c3; }
+.btn-delete:hover { background: var(--red-bg); }
+.btn-delete.confirm { background: var(--red); color: #fff; border-color: var(--red); }
+td.nowrap { white-space: nowrap; }
+.role-viewer .btn-delete { display: none !important; }

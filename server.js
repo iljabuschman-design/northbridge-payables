@@ -246,6 +246,11 @@ const routes = [
 
   // Journals & ledger
   { method: 'GET', pattern: /^\/api\/journals$/, handler: async (req, m, q) => acct.listJournals(q.get('entity')) },
+  { method: 'DELETE', pattern: /^\/api\/journals\/(\d+)$/, handler: async (req, m) => acct.deleteJournal(m[1], req.user.name) },
+  { method: 'DELETE', pattern: /^\/api\/invoices\/(\d+)$/, handler: async (req, m) => acct.deleteInvoice(m[1], req.user.name) },
+  { method: 'DELETE', pattern: /^\/api\/suppliers\/(\d+)$/, handler: async (req, m) => acct.deleteParty('supplier', m[1], req.user.name) },
+  { method: 'DELETE', pattern: /^\/api\/customers\/(\d+)$/, handler: async (req, m) => acct.deleteParty('customer', m[1], req.user.name) },
+  { method: 'DELETE', pattern: /^\/api\/accounts\/([^/]+)$/, handler: async (req, m) => acct.deleteAccount(decodeURIComponent(m[1]), req.user.name) },
   { method: 'PUT', pattern: /^\/api\/journals\/(\d+)$/, handler: json((body, m, q, req) => acct.editJournal(Number(m[1]), body, req.user.name)) },
   { method: 'POST', pattern: /^\/api\/journals$/, handler: json((body) => acct.createManualJournal(body)) },
   {

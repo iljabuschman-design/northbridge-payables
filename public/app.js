@@ -434,6 +434,7 @@ async function openInvoiceDetail(id) {
     <div class="section-title">Journal entries <span class="muted">(click a line to open or edit its journal)</span></div>
     ${ledgerTable(ledger, true)}
 
+    <div class="dialog-actions inline admin-only"><button type="button" class="btn btn-delete" data-delete="invoice" data-id="${inv.id}">Delete invoice</button></div>
     ${inv.remaining_amount > 0.005 ? `<div class="dialog-actions inline">${isSale ? '' : '<button class="btn" id="btn-pay-invoice">Pay via bank</button>'}<button class="btn btn-primary" id="btn-record-payment">${isSale ? 'Record receipt' : 'Record payment'}</button></div>` : ''}
   `;
   const dlg = document.getElementById('dialog-detail');
@@ -487,6 +488,56 @@ document.addEventListener('click', (e) => {
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   editJournalById(Number(btn.dataset.editJournal)).catch((err) => console.error(err));
 }, true);
+
+/**
+ * Delete buttons (admin): the first click asks "Really delete?", the second deletes.
+ * The server decides what goes with it (e.g. an invoice's journal) and refuses what
+ * would break the books; the answer says what was deleted.
+ */
+const DELETE_URL = {
+  journal: (id) => `/api/journals/${id}`,
+  invoice: (id) => `/api/invoices/${id}`,
+  supplier: (id) => `/api/suppliers/${id}`,
+  customer: (id) => `/api/customers/${id}`,
+  account: (code) => `/api/accounts/${encodeURIComponent(code)}`,
+};
+document.addEventListener(
+  'click',
+  async (e) => {
+    const btn = e.target.closest('[data-delete]');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (btn.dataset.confirm !== '1') {
+      btn.dataset.confirm = '1';
+      btn.dataset.label = btn.textContent;
+      btn.textContent = 'Really delete?';
+      btn.classList.add('confirm');
+      setTimeout(() => {
+        if (btn.isConnected && btn.dataset.confirm === '1') {
+          btn.dataset.confirm = '';
+          btn.textContent = btn.dataset.label;
+          btn.classList.remove('confirm');
+        }
+      }, 5000);
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const r = await post(DELETE_URL[btn.dataset.delete](btn.dataset.id), {}, 'DELETE');
+      document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+      showNotice(`Deleted: ${r.deleted}.`);
+      refreshActive();
+    } catch (err) {
+      showNotice(err.message, 'bad');
+      btn.disabled = false;
+      btn.dataset.confirm = '';
+      btn.textContent = btn.dataset.label;
+      btn.classList.remove('confirm');
+    }
+  },
+  true
+);
 
 /** Wire up clickable journal lines rendered by ledgerTable(…, true). */
 function bindJournalRows(root) {
@@ -952,7 +1003,7 @@ async function loadJournals() {
         <td>${esc(j.journal_date)}</td><td>${esc(j.period)}</td><td><span class="entity-tag">${esc(j.entity_code)}</span></td><td>${esc(j.reference || '')}</td><td>${esc(j.description)}${j.edit_count ? ' <span class="badge edited">Edited</span>' : ''}</td>
         <td><span class="badge src-${esc(j.source_type)}">${esc(SOURCE_LABEL[j.source_type] || j.source_type)}</span></td>
         <td class="num">${j.line_count}</td><td class="num">${fmt(j.total, BASE)}</td>
-        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${j.id}">Edit</button></td></tr>`
+        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${j.id}">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="journal" data-id="${j.id}">Delete</button></td></tr>`
     )
     .join('');
   tbody.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openJournalDetail(Number(tr.dataset.id))));
@@ -1124,7 +1175,7 @@ async function loadLedger() {
         <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
         <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td>
-        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
+        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="journal" data-id="${e.journal_id}">Delete</button></td></tr>`
     )
     .join('');
   bindJournalRows(document.getElementById('ledger-table'));
@@ -1409,7 +1460,7 @@ async function loadSetup() {
       <td>${a.statement === 'BS' ? 'Balance sheet' : 'P&amp;L'}</td>
       <td class="muted">${esc(ROLE_LABEL[a.role] || (a.bank_currency ? 'Bank' : ''))}</td>
       <td class="num">${fmt(a.balance)}</td>
-      <td><button class="btn btn-small edit-account">Edit</button></td>
+      <td class="nowrap"><button class="btn btn-small edit-account">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="account" data-id="${esc(a.code)}">Delete</button></td>
     </tr>`
   ).join('');
   tbody.querySelectorAll('tr').forEach((tr) => {
@@ -1426,7 +1477,7 @@ async function loadSetup() {
 
   document.querySelector('#customers-table tbody').innerHTML = CUSTOMERS.map(
     (p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
-      <td><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button></td></tr>`
+      <td class="nowrap"><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="customer" data-id="${p.id}">Delete</button></td></tr>`
   ).join('');
   document.querySelectorAll('[data-edit-party]').forEach((btn) =>
     btn.addEventListener('click', () => {
@@ -2477,7 +2528,7 @@ async function loadAccountView(code) {
             <td>${esc(e.description)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td>
             <td>${esc(ccName(e.cost_center))}</td>
             <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td><td class="num">${nat(e.balance)}</td>
-            <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
+            <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="journal" data-id="${e.journal_id}">Delete</button></td></tr>`
         )
         .join('')}
       <tr class="total"><td colspan="5">${isPl ? 'Cumulative at' : 'Closing balance at'} ${esc(d.to)}</td><td class="num">${fmt(d.debit)}</td><td class="num">${fmt(d.credit)}</td><td class="num">${nat(d.closing)}</td><td></td></tr>
@@ -2791,7 +2842,7 @@ async function loadSuppliersPage() {
       <td class="num">${s.open ? `<span class="badge open">${s.open}</span>` : '0'}</td>
       <td class="num">${fmt(s.outstanding, BASE)}</td>
       <td class="muted">${l ? `${l.documents} invoice(s)${l.accuracy !== null ? `, ${Math.round(l.accuracy * 100)}% right` : ''}` : '-'}</td>
-      <td><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button></td>
+      <td class="nowrap"><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="supplier" data-id="${p.id}">Delete</button></td>
     </tr>`;
   }).join('');
   document.querySelectorAll('#suppliers-table [data-edit-party]').forEach((btn) =>
