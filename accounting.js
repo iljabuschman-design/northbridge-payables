@@ -501,8 +501,17 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
   const parsed = [];
   for (const [i, l] of lines.entries()) {
     const net = round2(Number(l.net_amount));
-    const vatRate = Number(l.vat_rate ?? 0);
     if (!(net >= 0)) throw httpError(400, `Line ${i + 1}: net amount must be zero or more`);
+    // A VAT code decides the rate and the VAT account; a bare rate (older callers) is matched to its code.
+    let vatCode = null;
+    if (l.vat_code) {
+      vatCode = await getVatCode(l.vat_code);
+      if (!vatCode) throw httpError(400, `Line ${i + 1}: unknown VAT code ${l.vat_code}`);
+      if (!vatCode.active) throw httpError(400, `Line ${i + 1}: VAT code ${vatCode.code} is no longer in use`);
+    } else {
+      vatCode = await db.get('SELECT * FROM vat_codes WHERE rate = ? AND active = 1 ORDER BY code LIMIT 1', Number(l.vat_rate ?? 0));
+    }
+    const vatRate = vatCode ? vatCode.rate : Number(l.vat_rate ?? 0);
     if (!(vatRate >= 0 && vatRate <= 100)) throw httpError(400, `Line ${i + 1}: VAT rate must be between 0 and 100`);
     const acc = (await requireAccount(l.account_code));
     if (acc.role === ROLES.AP || acc.role === ROLES.AR || acc.category === 'cash') {
@@ -513,17 +522,29 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
       account_code: acc.code,
       cost_center: await resolveCostCenter(acc, l.cost_center),
       net_amount: net,
+      vat_code: vatCode ? vatCode.code : null,
+      vat_account: vatCode ? (type === 'purchase' ? vatCode.purchase_account : vatCode.sales_account) : null,
       vat_rate: vatRate,
       vat_amount: round2((net * vatRate) / 100),
       base_net: round2(net * exchange_rate),
     });
   }
 
+  // VAT per VAT code (each has its own GL account), translated to GBP per code.
+  const vatGroups = [];
+  for (const l of parsed) {
+    const key = l.vat_code || '';
+    let g = vatGroups.find((x) => x.key === key);
+    if (!g) vatGroups.push((g = { key, code: l.vat_code, account: l.vat_account, amount: 0 }));
+    g.amount = round2(g.amount + l.vat_amount);
+  }
+  for (const g of vatGroups) g.base = round2(g.amount * exchange_rate);
+
   const net_amount = round2(parsed.reduce((s, l) => s + l.net_amount, 0));
   const vat_amount = round2(parsed.reduce((s, l) => s + l.vat_amount, 0));
   const total_amount = round2(net_amount + vat_amount);
   const base_net = round2(parsed.reduce((s, l) => s + l.base_net, 0));
-  const base_vat = round2(vat_amount * exchange_rate);
+  const base_vat = round2(vatGroups.reduce((s, g) => s + g.base, 0));
   const base_total = round2(base_net + base_vat);
   if (!(total_amount > 0)) throw httpError(400, 'Invoice total must be more than zero');
 
@@ -531,10 +552,10 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
     const info = (await db.run(`INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, type, entity.id, party_id, String(invoice_number).trim(), invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null));
     const invoiceId = Number(info.lastInsertRowid);
-    const insertLine = db.statement(`INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insertLine = db.statement(`INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center, vat_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const l of parsed) {
-      l.id = Number((await insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center)).lastInsertRowid);
+      l.id = Number((await insertLine.run(invoiceId, l.description, l.account_code, l.net_amount, l.vat_rate, l.vat_amount, l.base_net, l.cost_center, l.vat_code)).lastInsertRowid);
     }
 
     const isPurchase = type === 'purchase';
@@ -550,13 +571,15 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
       fx_note: note(l.net_amount),
       description: l.description ? `${desc} - ${l.description}` : desc,
     }));
-    if (base_vat > 0) {
+    for (const g of vatGroups) {
+      if (!(g.base > 0)) continue;
       journalLines.push({
-        account_code: (await accountByRole(isPurchase ? ROLES.VAT_IN : ROLES.VAT_OUT)).code,
-        [isPurchase ? 'debit' : 'credit']: base_vat,
+        // Without a VAT code (none set up yet) VAT goes to the general VAT account.
+        account_code: g.account || (await accountByRole(isPurchase ? ROLES.VAT_IN : ROLES.VAT_OUT)).code,
+        [isPurchase ? 'debit' : 'credit']: g.base,
         currency,
-        fx_note: note(vat_amount),
-        description: `${desc} - ${isPurchase ? 'input' : 'output'} VAT`,
+        fx_note: note(g.amount),
+        description: `${desc} - ${isPurchase ? 'input' : 'output'} VAT${g.code ? ` (${g.code})` : ''}`,
       });
     }
     journalLines.push({
@@ -990,6 +1013,110 @@ async function kpis({ from, to, entity_id }) {
   };
 }
 
+// ---------- VAT codes ----------
+
+async function listVatCodes() {
+  return db.all(
+    `SELECT v.*, pa.name AS purchase_account_name, sa.name AS sales_account_name,
+       (SELECT COUNT(*) FROM invoice_lines il WHERE il.vat_code = v.code) AS used_on_lines
+     FROM vat_codes v JOIN accounts pa ON pa.code = v.purchase_account JOIN accounts sa ON sa.code = v.sales_account
+     ORDER BY v.rate DESC, v.code`
+  );
+}
+
+async function getVatCode(code) {
+  return db.get('SELECT * FROM vat_codes WHERE code = ?', String(code || '').trim().toUpperCase());
+}
+
+async function checkVatAccounts(purchase_account, sales_account) {
+  const pa = await getAccount(purchase_account);
+  const sa = await getAccount(sales_account);
+  if (!pa || pa.statement !== 'BS') throw httpError(400, 'Choose a balance sheet account for input VAT (purchases)');
+  if (!sa || sa.statement !== 'BS') throw httpError(400, 'Choose a balance sheet account for output VAT (sales)');
+}
+
+async function createVatCode({ code, description, rate, purchase_account, sales_account }) {
+  code = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9-]{2,12}$/.test(code)) throw httpError(400, 'VAT code: 2-12 letters/digits, e.g. VAT5');
+  if (await getVatCode(code)) throw httpError(400, `VAT code ${code} already exists`);
+  rate = Number(rate);
+  if (!(rate >= 0 && rate <= 100)) throw httpError(400, 'Rate must be between 0 and 100');
+  if (!String(description || '').trim()) throw httpError(400, 'Description is required');
+  await checkVatAccounts(purchase_account, sales_account);
+  await db.run(
+    'INSERT INTO vat_codes (code, description, rate, purchase_account, sales_account) VALUES (?, ?, ?, ?, ?)',
+    code, String(description).trim(), rate, purchase_account, sales_account
+  );
+  return getVatCode(code);
+}
+
+/** Description, accounts and active flag can change; the rate only while the code is unused. */
+async function updateVatCode(code, { description, rate, purchase_account, sales_account, active }) {
+  const v = await getVatCode(code);
+  if (!v) throw httpError(404, 'VAT code not found');
+  if (rate !== undefined && Number(rate) !== v.rate) {
+    const used = (await db.get('SELECT COUNT(*) AS n FROM invoice_lines WHERE vat_code = ?', v.code)).n;
+    if (used) throw httpError(400, `${v.code} is used on ${used} invoice line(s): create a new code for a new rate`);
+    if (!(Number(rate) >= 0 && Number(rate) <= 100)) throw httpError(400, 'Rate must be between 0 and 100');
+  }
+  const pa = purchase_account || v.purchase_account;
+  const sa = sales_account || v.sales_account;
+  await checkVatAccounts(pa, sa);
+  await db.run(
+    'UPDATE vat_codes SET description = ?, rate = ?, purchase_account = ?, sales_account = ?, active = ? WHERE code = ?',
+    description !== undefined && String(description).trim() ? String(description).trim() : v.description,
+    rate !== undefined ? Number(rate) : v.rate,
+    pa,
+    sa,
+    active !== undefined ? (active ? 1 : 0) : v.active,
+    v.code
+  );
+  return getVatCode(v.code);
+}
+
+/**
+ * One-off set-up of VAT codes on an existing database (safe to run every start):
+ * VAT20 and VAT0 with their own GL accounts; existing invoice lines get their
+ * code, and VAT that invoices booked on the general VAT accounts moves to the
+ * accounts of their code.
+ */
+async function setUpVatCodes() {
+  await db.addColumn('invoice_lines', 'vat_code', 'TEXT');
+  if (!(await getCompany())) return; // empty database: seeding comes first
+  if ((await db.get('SELECT COUNT(*) AS n FROM vat_codes')).n > 0) return;
+  await transaction(async () => {
+    await db.lock(424243);
+    if ((await db.get('SELECT COUNT(*) AS n FROM vat_codes')).n > 0) return;
+    const accounts = [
+      { code: '1210', name: 'Input VAT 20% (VAT20)', category: 'other_current_assets' },
+      { code: '1220', name: 'Input VAT 0% (VAT0)', category: 'other_current_assets' },
+      { code: '2210', name: 'Output VAT 20% (VAT20)', category: 'other_current_liabilities' },
+      { code: '2220', name: 'Output VAT 0% (VAT0)', category: 'other_current_liabilities' },
+    ];
+    for (const a of accounts) if (!(await getAccount(a.code))) await createAccount(a);
+    await db.run("INSERT INTO vat_codes (code, description, rate, purchase_account, sales_account) VALUES ('VAT20', 'Standard rate 20%', 20, '1210', '2210')");
+    await db.run("INSERT INTO vat_codes (code, description, rate, purchase_account, sales_account) VALUES ('VAT0', 'Zero rate 0%', 0, '1220', '2220')");
+    await db.run("UPDATE invoice_lines SET vat_code = 'VAT20' WHERE vat_code IS NULL AND vat_rate = 20");
+    await db.run("UPDATE invoice_lines SET vat_code = 'VAT0' WHERE vat_code IS NULL AND vat_rate = 0");
+    // Invoices whose lines are all VAT20/VAT0: their VAT is all 20%, so it moves to the VAT20 accounts.
+    const moved = `journal_id IN (
+        SELECT j.id FROM journals j WHERE j.source_type = 'invoice'
+          AND NOT EXISTS (SELECT 1 FROM invoice_lines il WHERE il.invoice_id = j.source_id AND il.vat_code IS NULL))`;
+    const vatIn = (await accountByRole(ROLES.VAT_IN)).code;
+    const vatOut = (await accountByRole(ROLES.VAT_OUT)).code;
+    await db.run(`UPDATE ledger_entries SET account_code = '1210', description = description || ' (VAT20)' WHERE account_code = ? AND ${moved}`, vatIn);
+    await db.run(`UPDATE ledger_entries SET account_code = '2210', description = description || ' (VAT20)' WHERE account_code = ? AND ${moved}`, vatOut);
+  });
+}
+
+/** Every account VAT is booked on, for purchases (input) or sales (output): the general one plus each code's. */
+async function vatAccounts(side) {
+  const general = (await accountByRole(side === 'input' ? ROLES.VAT_IN : ROLES.VAT_OUT)).code;
+  const col = side === 'input' ? 'purchase_account' : 'sales_account';
+  const codes = (await db.all(`SELECT DISTINCT ${col} AS code FROM vat_codes`)).map((r) => r.code);
+  return [...new Set([general, ...codes])];
+}
+
 // ---------- Editing posted journals ----------
 
 function journalSnapshot(j) {
@@ -1212,6 +1339,12 @@ module.exports = {
   assertAccountForEntity,
   editJournal,
   accountDetail,
+  listVatCodes,
+  getVatCode,
+  createVatCode,
+  updateVatCode,
+  setUpVatCodes,
+  vatAccounts,
   listAccounts,
   getAccount,
   listBankAccounts,

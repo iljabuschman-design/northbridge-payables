@@ -17,6 +17,7 @@ const { init, db } = require('./db');
 // Requests wait for this; on Vercel it runs once per function instance.
 const ready = init()
   .then(seedIfEmpty)
+  .then(acct.setUpVatCodes)
   .then(auth.ensureDefaultUsers)
   .then(() => {
     fx.startScheduler();
@@ -147,6 +148,11 @@ const routes = [
     }),
   },
   { method: 'GET', pattern: /^\/api\/entities$/, handler: async () => acct.listEntities() },
+
+  // VAT codes
+  { method: 'GET', pattern: /^\/api\/vat-codes$/, handler: async () => acct.listVatCodes() },
+  { method: 'POST', pattern: /^\/api\/vat-codes$/, handler: json((body) => acct.createVatCode(body)) },
+  { method: 'PUT', pattern: /^\/api\/vat-codes\/([^/]+)$/, handler: json((body, m) => acct.updateVatCode(decodeURIComponent(m[1]), body)) },
 
   // Cost centres
   { method: 'GET', pattern: /^\/api\/cost-centers$/, handler: async () => acct.listCostCenters() },

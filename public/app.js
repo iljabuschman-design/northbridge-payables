@@ -18,6 +18,7 @@ const ROLE_LABEL = {
 };
 const SOURCE_LABEL = { manual: 'Manual', invoice: 'Invoice', payment: 'Payment', bank: 'Bank', opening: 'Opening', asset: 'Asset', depreciation: 'Depreciation' };
 let COST_CENTERS = [];
+let VAT_CODES = [];
 let PERIODS = [];
 
 // ---------- Helpers ----------
@@ -114,6 +115,23 @@ function syncCcSelect(accountSelect, ccSelect) {
   const pl = isPlAccount(accountSelect.value);
   ccSelect.disabled = !pl;
   if (!pl) ccSelect.value = '';
+}
+
+async function loadVatCodes() {
+  VAT_CODES = await api('/api/vat-codes');
+}
+
+function vatCodeOptions(selected) {
+  return VAT_CODES.filter((v) => v.active || v.code === selected)
+    .map((v) => `<option value="${esc(v.code)}" data-rate="${v.rate}" ${v.code === selected ? 'selected' : ''}>${esc(v.code)} (${v.rate}%)</option>`)
+    .join('');
+}
+
+/** Default VAT code for a new line: standard rate for GBP, zero rate for foreign-currency invoices. */
+function defaultVatCode(currency) {
+  const active = VAT_CODES.filter((v) => v.active);
+  const pick = currency === BASE ? active.reduce((a, b) => (!a || b.rate > a.rate ? b : a), null) : active.find((v) => v.rate === 0);
+  return (pick || active[0] || {}).code || '';
 }
 
 async function loadCostCenters() {
@@ -364,9 +382,9 @@ async function openInvoiceDetail(id) {
 
     <div class="section-title">Lines</div>
     <div class="table-wrap"><table class="table">
-      <thead><tr><th>Description</th><th>Account</th><th>Cost centre</th><th class="num">Net</th><th class="num">VAT %</th><th class="num">VAT</th><th class="num">Net (GBP)</th></tr></thead>
+      <thead><tr><th>Description</th><th>Account</th><th>Cost centre</th><th class="num">Net</th><th>VAT code</th><th class="num">VAT</th><th class="num">Net (GBP)</th></tr></thead>
       <tbody>${lines
-        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${acctLink(l.account_code, l.account_name)}</td><td>${esc(ccName(l.cost_center))}</td><td class="num">${fmt(l.net_amount)}</td><td class="num">${l.vat_rate}</td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
+        .map((l) => `<tr><td>${esc(l.description || '')}</td><td>${acctLink(l.account_code, l.account_name)}</td><td>${esc(ccName(l.cost_center))}</td><td class="num">${fmt(l.net_amount)}</td><td>${esc(l.vat_code || '')} <span class="muted">${l.vat_rate}%</span></td><td class="num">${fmt(l.vat_amount)}</td><td class="num">${fmt(l.base_net)}</td></tr>`)
         .join('')}</tbody>
     </table></div>
 
@@ -462,7 +480,7 @@ const invoiceLineAccounts = (type) =>
 document.querySelectorAll('[data-new-invoice]').forEach((btn) =>
   btn.addEventListener('click', async () => {
     invoiceType = btn.dataset.newInvoice;
-    await Promise.all([loadAccounts(), loadParties(), loadCostCenters()]);
+    await Promise.all([loadAccounts(), loadParties(), loadCostCenters(), loadVatCodes()]);
     const parties = invoiceType === 'sale' ? CUSTOMERS : SUPPLIERS;
     invoiceForm.reset();
     document.getElementById('invoice-dialog-title').textContent = invoiceType === 'sale' ? 'New sales invoice' : 'New purchase invoice';
@@ -482,14 +500,14 @@ document.querySelectorAll('[data-new-invoice]').forEach((btn) =>
 function addInvoiceLine() {
   const tbody = document.querySelector('#invoice-lines tbody');
   const defaultAccount = invoiceType === 'sale' ? '4000' : '5000';
-  const vat = invoiceForm.currency.value === BASE ? 20 : 0;
+  const vat = defaultVatCode(invoiceForm.currency.value);
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><input class="l-desc" maxlength="120" placeholder="Description" /></td>
     <td><select class="l-account">${accountOptions(invoiceLineAccounts(invoiceType), defaultAccount)}</select></td>
     <td><select class="l-cc">${ccOptions(invoiceType === 'sale' ? '100' : '')}</select></td>
     <td class="num"><input class="l-net num" type="number" step="0.01" min="0" required /></td>
-    <td class="num"><input class="l-vat-rate num narrow" type="number" step="any" min="0" max="100" value="${vat}" /></td>
+    <td><select class="l-vat-code">${vatCodeOptions(vat)}</select></td>
     <td class="num l-vat">0.00</td>
     <td><button type="button" class="btn btn-small btn-icon" title="Remove line">×</button></td>`;
   tr.querySelector('.btn-icon').addEventListener('click', () => {
@@ -510,7 +528,8 @@ function invoiceLinesFromForm() {
     account_code: tr.querySelector('.l-account').value,
     cost_center: tr.querySelector('.l-cc').value || null,
     net_amount: parseFloat(tr.querySelector('.l-net').value) || 0,
-    vat_rate: parseFloat(tr.querySelector('.l-vat-rate').value) || 0,
+    vat_code: tr.querySelector('.l-vat-code').value,
+    vat_rate: Number((tr.querySelector('.l-vat-code').selectedOptions[0] || { dataset: { rate: 0 } }).dataset.rate) || 0,
     row: tr,
   }));
 }
@@ -540,9 +559,9 @@ function syncInvoiceCurrency() {
 
 function refreshInvoiceRate() {
   const ccy = invoiceForm.currency.value;
-  // Default VAT for new lines follows the currency (UK 20% vs overseas 0%).
-  document.querySelectorAll('#invoice-lines .l-vat-rate').forEach((i) => {
-    if (!i.dataset.touched) i.value = ccy === BASE ? 20 : 0;
+  // Default VAT code for lines not chosen by hand follows the currency (UK standard rate vs overseas zero rate).
+  document.querySelectorAll('#invoice-lines .l-vat-code').forEach((i) => {
+    if (!i.dataset.touched) i.value = defaultVatCode(ccy);
   });
   autoRate(ccy, invoiceForm.invoice_date.value, invoiceForm.exchange_rate, document.getElementById('invoice-rate-hint')).then(updateInvoiceTotals);
 }
@@ -550,7 +569,7 @@ invoiceForm.party_id.addEventListener('change', syncInvoiceCurrency);
 invoiceForm.currency.addEventListener('change', refreshInvoiceRate);
 invoiceForm.invoice_date.addEventListener('change', refreshInvoiceRate);
 document.querySelector('#invoice-lines').addEventListener('input', (e) => {
-  if (e.target.classList.contains('l-vat-rate')) e.target.dataset.touched = '1';
+  if (e.target.classList.contains('l-vat-code')) e.target.dataset.touched = '1';
 });
 
 invoiceForm.addEventListener('submit', async (e) => {
@@ -1370,6 +1389,8 @@ async function loadSetup() {
   await Promise.all([loadCostCenters(), loadPeriods()]);
   renderCostCenterList();
   renderPeriods();
+  await loadVatCodes();
+  renderVatCodes();
   if (isAdmin()) await loadUsers();
 
   renderFxStatus(await api('/api/fx/status'));
@@ -2466,6 +2487,68 @@ reclassForm.addEventListener('submit', async (e) => {
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
+
+// ---------- Setup: VAT codes ----------
+
+function renderVatCodes() {
+  const bsAccounts = (selected) => accountOptions((a) => a.statement === 'BS' && !a.bank_currency, selected);
+  const admin = isAdmin();
+  document.querySelector('#vat-codes-table tbody').innerHTML = VAT_CODES.map(
+    (v) => `<tr data-vat="${esc(v.code)}">
+      <td><strong>${esc(v.code)}</strong></td>
+      <td>${esc(v.description)}</td>
+      <td class="num">${v.rate}%</td>
+      <td>${admin ? `<select class="v-purchase">${bsAccounts(v.purchase_account)}</select>` : acctLink(v.purchase_account, v.purchase_account_name)}</td>
+      <td>${admin ? `<select class="v-sales">${bsAccounts(v.sales_account)}</select>` : acctLink(v.sales_account, v.sales_account_name)}</td>
+      <td class="num">${v.used_on_lines}</td>
+      <td>${v.active ? '<span class="badge paid">Active</span>' : '<span class="badge open">Not in use</span>'}</td>
+      <td class="admin-only"><button type="button" class="btn btn-small v-toggle">${v.active ? 'Stop using' : 'Use again'}</button></td>
+    </tr>`
+  ).join('');
+  const errEl = document.getElementById('vat-code-error');
+  const save = async (code, body) => {
+    errEl.textContent = '';
+    try {
+      await post(`/api/vat-codes/${encodeURIComponent(code)}`, body, 'PUT');
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+    await loadVatCodes();
+    renderVatCodes();
+  };
+  document.querySelectorAll('#vat-codes-table tr[data-vat]').forEach((tr) => {
+    const code = tr.dataset.vat;
+    const v = VAT_CODES.find((x) => x.code === code);
+    if (!admin) return;
+    tr.querySelector('.v-purchase').addEventListener('change', (e) => save(code, { purchase_account: e.target.value }));
+    tr.querySelector('.v-sales').addEventListener('change', (e) => save(code, { sales_account: e.target.value }));
+    tr.querySelector('.v-toggle').addEventListener('click', () => save(code, { active: !v.active }));
+  });
+  const form = document.getElementById('form-vat-code');
+  form.purchase_account.innerHTML = bsAccounts('1200');
+  form.sales_account.innerHTML = bsAccounts('2200');
+}
+
+document.getElementById('form-vat-code').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const errEl = document.getElementById('vat-code-error');
+  errEl.textContent = '';
+  try {
+    await post('/api/vat-codes', {
+      code: f.code.value,
+      description: f.description.value,
+      rate: parseFloat(f.rate.value),
+      purchase_account: f.purchase_account.value,
+      sales_account: f.sales_account.value,
+    });
+    f.reset();
+    await loadVatCodes();
+    renderVatCodes();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
 
 // ---------- Login, users & permissions ----------
 

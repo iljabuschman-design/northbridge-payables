@@ -27,7 +27,7 @@
 const { db, round2 } = require('./db');
 const acct = require('./accounting');
 
-const { httpError, ROLES } = acct;
+const { httpError } = acct;
 
 const BOXES = [
   ['vat_due_sales', 'vatDueSales'],
@@ -85,16 +85,18 @@ async function calculate({ entity_id, from, to }) {
   boxes.net_vat_due = round2(Math.abs(boxes.total_vat_due - boxes.vat_reclaimed));
 
   // What the VAT ledgers moved in the period, to spot VAT booked outside invoices.
-  const ledger = async (role, sign) => {
-    const code = (await acct.accountByRole(role)).code;
+  // VAT is booked per VAT code on its own account, so the check covers all of them.
+  const ledger = async (side, sign) => {
+    const codes = await acct.vatAccounts(side);
     const r = await db.get(
-      'SELECT COALESCE(SUM(debit - credit), 0) AS t FROM ledger_entries WHERE account_code = ? AND entity_id = ? AND entry_date >= ? AND entry_date <= ?',
-      code, entity.id, from, to
+      `SELECT COALESCE(SUM(debit - credit), 0) AS t FROM ledger_entries
+       WHERE account_code IN (${codes.map(() => '?').join(', ')}) AND entity_id = ? AND entry_date >= ? AND entry_date <= ?`,
+      ...codes, entity.id, from, to
     );
-    return { code, amount: round2(sign * r.t) };
+    return { code: codes.join(', '), amount: round2(sign * r.t) };
   };
-  const outLedger = await ledger(ROLES.VAT_OUT, -1);
-  const inLedger = await ledger(ROLES.VAT_IN, 1);
+  const outLedger = await ledger('output', -1);
+  const inLedger = await ledger('input', 1);
 
   return {
     entity,

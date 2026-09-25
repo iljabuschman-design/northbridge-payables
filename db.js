@@ -119,7 +119,18 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   vat_rate REAL NOT NULL,
   vat_amount REAL NOT NULL,
   base_net REAL NOT NULL,
-  cost_center TEXT REFERENCES cost_centers(code)
+  cost_center TEXT REFERENCES cost_centers(code),
+  vat_code TEXT
+);
+
+-- VAT codes: a rate plus the GL accounts its VAT is booked to on purchase and sales invoices.
+CREATE TABLE IF NOT EXISTS vat_codes (
+  code TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  rate REAL NOT NULL,
+  purchase_account TEXT NOT NULL REFERENCES accounts(code),
+  sales_account TEXT NOT NULL REFERENCES accounts(code),
+  active INTEGER NOT NULL DEFAULT 1
 );
 
 -- A payment (purchase invoice) or receipt (sales invoice). "amount" is the
@@ -309,7 +320,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();
@@ -456,6 +467,12 @@ const db = {
     all: (...params) => db.all(sql, ...params),
   }),
   exec: (sql) => driver.exec(sql),
+  /** Add a column to an existing table if it isn't there yet (keeps the data). */
+  addColumn: async (table, column, type) => {
+    if (driver.kind === 'postgres') return driver.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    const cols = await driver.all(`PRAGMA table_info(${table})`, []);
+    if (!cols.some((c) => c.name === column)) await driver.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  },
   lock: (key) => driver.lock(key),
 };
 
