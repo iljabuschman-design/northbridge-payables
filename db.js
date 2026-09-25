@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   base_vat REAL NOT NULL,
   base_total REAL NOT NULL,
   notes TEXT,
+  due_date TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -121,6 +122,31 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   base_net REAL NOT NULL,
   cost_center TEXT REFERENCES cost_centers(code),
   vat_code TEXT
+);
+
+-- Uploaded invoice documents (PDF), their text and what recognition suggested.
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  text_lines TEXT,
+  suggestion_json TEXT,
+  invoice_id INTEGER REFERENCES invoices(id),
+  uploaded_by TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- What invoice recognition has learned per supplier (labels, formats, how to book).
+CREATE TABLE IF NOT EXISTS vendor_profiles (
+  supplier_id INTEGER PRIMARY KEY REFERENCES suppliers(id) ON DELETE CASCADE,
+  profile_json TEXT NOT NULL,
+  documents INTEGER NOT NULL DEFAULT 0,
+  fields_checked INTEGER NOT NULL DEFAULT 0,
+  fields_correct INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- VAT codes: a rate plus the GL accounts its VAT is booked to on purchase and sales invoices.
@@ -320,7 +346,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();
@@ -407,7 +433,7 @@ if (USE_POSTGRES) {
     async lock(key) {
       await (txStore.getStore() || pool).query('SELECT pg_advisory_xact_lock($1)', [key]);
     },
-    ddl: (sql) => sql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/g, 'SERIAL PRIMARY KEY').replace(/ REAL\b/g, ' DOUBLE PRECISION'),
+    ddl: (sql) => sql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/g, 'SERIAL PRIMARY KEY').replace(/ REAL\b/g, ' DOUBLE PRECISION').replace(/ BLOB\b/g, ' BYTEA'),
   };
 } else {
   const { DatabaseSync } = require('node:sqlite');

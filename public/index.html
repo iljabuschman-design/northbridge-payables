@@ -53,6 +53,7 @@
   </div>
 </header>
 
+<div class="notice-banner" id="notice-banner" hidden></div>
 <div class="problem-banner" id="problem-banner" hidden><span></span> <button type="button" class="btn btn-small">Try again</button></div>
 <div class="demo-banner" id="demo-banner" hidden>Demo version: everything runs on demo data that resets regularly, so changes you make are not kept.</div>
 
@@ -128,7 +129,12 @@
   <section id="view-purchases" class="view" hidden>
     <div class="panel-header">
       <h2>Purchase invoices</h2>
-      <button class="btn btn-primary" data-new-invoice="purchase">+ New purchase invoice</button>
+      <div class="header-actions">
+        <span class="muted" id="recognise-status"></span>
+        <button class="btn" id="btn-upload-invoice" title="Upload a supplier invoice PDF: the app reads it and fills in the invoice">⬆ Upload invoice PDF</button>
+        <input type="file" id="invoice-pdf-input" accept="application/pdf,.pdf" hidden />
+        <button class="btn btn-primary" data-new-invoice="purchase">+ New purchase invoice</button>
+      </div>
     </div>
     <div class="table-wrap"><table class="table invoices-table" id="purchases-table"></table></div>
   </section>
@@ -455,6 +461,17 @@
       </form>
     </div>
 
+    <div class="panel" style="margin-top:16px;">
+      <h2>Invoice recognition: what the app has learned</h2>
+      <p class="hint">Per supplier: which labels its invoices use, its date format and how its invoices are booked - learned from the corrections made when saving uploaded invoices. "Forget" starts over for that supplier.</p>
+      <div class="table-wrap">
+        <table class="table" id="recognition-table">
+          <thead><tr><th>Supplier</th><th class="num">Invoices</th><th class="num">Accuracy</th><th>Last invoice</th><th>Learned labels</th><th>Booked as</th><th class="admin-only"></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="panel admin-only" style="margin-top:16px;">
       <h2>Users</h2>
       <p class="hint"><strong>Admin</strong>: can do everything, including managing users. <strong>Viewer</strong>: can see everything but can't create, edit, pay, upload or close anything.</p>
@@ -530,6 +547,9 @@
       <h3>Paying suppliers</h3>
       <p>The Pay button opens a <strong>simulated</strong> bank payment window: choose the account to pay from and your bank, "log in" and approve. No real bank is contacted and no money moves; approving books the payment on the invoice as if the bank executed it today. When paying from an account in another currency, the bank converts at today's ECB rate and the difference with the invoice's booked rate is a realised FX gain or loss. Real payments would need an FCA-authorised Open Banking payment initiation provider (e.g. TrueLayer or Yapily), which can later replace the simulated bank behind the same button. A payment made this way would also appear on the next real bank statement; that statement line is then already settled and should be posted against accounts payable or left out.</p>
 
+      <h3>Invoice recognition</h3>
+      <p>Supplier invoices can be uploaded as PDF (Purchase invoices → Upload invoice PDF, or drop the file on the page). The browser reads the PDF's text with pdf.js; the server then recognises the supplier (by VAT number, IBAN, bank account, name or learned letterhead), invoice number, invoice and due date, currency, net, VAT and total, and suggests a VAT code from the rate. It uses built-in labels in English, German, French and Dutch. When the invoice is saved, the app compares what was saved with what it suggested and learns per supplier: the labels that supplier uses, its date format, its currency, its letterhead and how its invoices are booked. The PDF is kept with the invoice. Scanned PDFs without a text layer can't be read (that would need OCR or an AI service). Amounts per invoice line aren't split out yet: the net amount goes on one line.</p>
+
       <h3>VAT codes</h3>
       <p>Every invoice line carries a VAT code (VAT20 = 20%, VAT0 = 0%; more can be added in Setup). Each code books its VAT to its own GL accounts: input VAT on purchases (1210 for VAT20, 1220 for VAT0) and output VAT on sales (2210 / 2220). The general VAT accounts 1200 and 2200 remain for VAT that isn't from an invoice, such as payments to or refunds from HMRC. VAT booked by invoices before VAT codes existed was moved to the VAT20 accounts.</p>
 
@@ -546,8 +566,13 @@
 
 <!-- Invoice (sales or purchase) -->
 <dialog id="dialog-invoice" class="wide">
+  <div class="invoice-layout">
+  <div class="invoice-preview" id="invoice-preview" hidden>
+    <iframe title="Uploaded invoice" id="invoice-preview-frame"></iframe>
+  </div>
   <form id="form-invoice" class="form">
     <h2 id="invoice-dialog-title">New invoice</h2>
+    <div class="recognition-banner" id="recognition-banner" hidden></div>
     <label>Entity <select name="entity_id" required class="entity-field"></select></label>
     <div class="row">
       <label><span id="invoice-party-label">Party</span>
@@ -560,6 +585,9 @@
     <div class="row">
       <label>Invoice date
         <input name="invoice_date" type="date" required />
+      </label>
+      <label>Due date
+        <input name="due_date" type="date" />
       </label>
       <label>Currency
         <select name="currency" id="invoice-currency-select" required></select>
@@ -585,6 +613,7 @@
       <button type="submit" class="btn btn-primary">Save invoice</button>
     </div>
   </form>
+  </div>
 </dialog>
 
 <!-- Customer / supplier -->
@@ -777,6 +806,7 @@
   </div>
 </dialog>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

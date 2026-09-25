@@ -484,13 +484,15 @@ const INVOICE_KIND = { purchase: 'supplier', sale: 'customer' };
  * GBP amounts are translated per line; the GBP total is the sum of the
  * translated parts so the journal always balances to the penny.
  */
-async function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, currency, exchange_rate, notes, lines }) {
+async function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, due_date, currency, exchange_rate, notes, lines }) {
   if (!INVOICE_KIND[type]) throw httpError(400, 'Invoice type must be purchase or sale');
   const entity = (await requireEntity(entity_id));
   const company = (await getCompany());
   const party = (await getParty(INVOICE_KIND[type], party_id));
   if (!party) throw httpError(400, `Unknown ${INVOICE_KIND[type]}`);
   if (!invoice_number || !invoice_date) throw httpError(400, 'Invoice number and date are required');
+  due_date = due_date || null;
+  if (due_date && (!/^\d{4}-\d{2}-\d{2}$/.test(due_date) || due_date < invoice_date)) throw httpError(400, 'The due date must be on or after the invoice date');
   const dup = (await db.get('SELECT 1 FROM invoices WHERE entity_id = ? AND type = ? AND party_id = ? AND invoice_number = ?', entity.id, type, party_id, String(invoice_number).trim()));
   if (dup) throw httpError(400, `Invoice ${invoice_number} from/to ${party.name} is already booked in ${entity.name}`);
   if (!CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
@@ -549,8 +551,8 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
   if (!(total_amount > 0)) throw httpError(400, 'Invoice total must be more than zero');
 
   return transaction(async () => {
-    const info = (await db.run(`INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, type, entity.id, party_id, String(invoice_number).trim(), invoice_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null));
+    const info = (await db.run(`INSERT INTO invoices (type, entity_id, party_id, invoice_number, invoice_date, due_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, type, entity.id, party_id, String(invoice_number).trim(), invoice_date, due_date, currency, net_amount, vat_amount, total_amount, exchange_rate, base_net, base_vat, base_total, notes || null));
     const invoiceId = Number(info.lastInsertRowid);
     const insertLine = db.statement(`INSERT INTO invoice_lines (invoice_id, description, account_code, net_amount, vat_rate, vat_amount, base_net, cost_center, vat_code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -1082,6 +1084,7 @@ async function updateVatCode(code, { description, rate, purchase_account, sales_
  */
 async function setUpVatCodes() {
   await db.addColumn('invoice_lines', 'vat_code', 'TEXT');
+  await db.addColumn('invoices', 'due_date', 'TEXT');
   if (!(await getCompany())) return; // empty database: seeding comes first
   if ((await db.get('SELECT COUNT(*) AS n FROM vat_codes')).n > 0) return;
   await transaction(async () => {

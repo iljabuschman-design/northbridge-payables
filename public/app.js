@@ -195,6 +195,7 @@ function statusBadge(status) {
 const rateRequests = new WeakMap();
 async function autoRate(currency, date, input, hintEl) {
   if (currency === BASE) {
+    rateRequests.set(input, {}); // a slower lookup for another currency must not overwrite this
     input.value = 1;
     input.readOnly = true;
     if (hintEl) hintEl.textContent = '';
@@ -362,14 +363,15 @@ async function loadInvoices(type) {
 }
 
 async function openInvoiceDetail(id) {
-  const { invoice: inv, lines, payments, ledger } = await api(`/api/invoices/${id}`);
+  const { invoice: inv, lines, payments, ledger, document: pdfDoc } = await api(`/api/invoices/${id}`);
   const isSale = inv.type === 'sale';
   const body = document.getElementById('detail-body');
   body.innerHTML = `
     <h2>${isSale ? 'Sales' : 'Purchase'} invoice ${esc(inv.invoice_number)} - ${esc(inv.party_name)}</h2>
     <div class="detail-grid">
       <div><span class="k">Entity:</span> ${esc(inv.entity_name)}</div>
-      <div><span class="k">Date:</span> ${esc(inv.invoice_date)}</div>
+      <div><span class="k">Date:</span> ${esc(inv.invoice_date)}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>
+      ${pdfDoc ? `<div><span class="k">Document:</span> <a href="/api/documents/${pdfDoc.id}/file" target="_blank" rel="noopener">📄 ${esc(pdfDoc.filename)}</a></div>` : ''}
       <div><span class="k">Currency:</span> ${inv.currency} @ ${inv.exchange_rate}</div>
       <div><span class="k">Net / VAT / Total:</span> ${fmt(inv.net_amount)} / ${fmt(inv.vat_amount)} / ${fmt(inv.total_amount)}</div>
       <div><span class="k">Total (GBP):</span> ${fmt(inv.base_total, BASE)}</div>
@@ -477,25 +479,35 @@ const invoiceLineAccounts = (type) =>
     ? (a) => a.category === 'revenue'
     : (a) => ['cost_of_sales', 'overheads', 'fixed_assets', 'other_current_assets'].includes(a.category) && !a.role;
 
-document.querySelectorAll('[data-new-invoice]').forEach((btn) =>
-  btn.addEventListener('click', async () => {
-    invoiceType = btn.dataset.newInvoice;
-    await Promise.all([loadAccounts(), loadParties(), loadCostCenters(), loadVatCodes()]);
-    const parties = invoiceType === 'sale' ? CUSTOMERS : SUPPLIERS;
-    invoiceForm.reset();
-    document.getElementById('invoice-dialog-title').textContent = invoiceType === 'sale' ? 'New sales invoice' : 'New purchase invoice';
-    document.getElementById('invoice-party-label').textContent = invoiceType === 'sale' ? 'Customer' : 'Supplier';
-    fillEntityField(invoiceForm.entity_id);
-    invoiceForm.party_id.innerHTML = parties.map((p) => `<option value="${p.id}" data-currency="${p.currency}">${esc(p.name)} (${p.currency})</option>`).join('');
-    invoiceForm.currency.innerHTML = currencyOptions(BASE);
-    invoiceForm.invoice_date.value = today();
-    document.getElementById('invoice-error').textContent = '';
-    document.querySelector('#invoice-lines tbody').innerHTML = '';
-    addInvoiceLine();
-    syncInvoiceCurrency();
-    document.getElementById('dialog-invoice').showModal();
-  })
-);
+/** Open the invoice form: empty, or filled in from a recognised PDF (suggestion). */
+async function openInvoiceDialog(type, suggestion = null) {
+  invoiceType = type;
+  if (!suggestion) recognition = null;
+  await Promise.all([loadAccounts(), loadParties(), loadCostCenters(), loadVatCodes()]);
+  const parties = invoiceType === 'sale' ? CUSTOMERS : SUPPLIERS;
+  invoiceForm.reset();
+  document.getElementById('invoice-dialog-title').textContent = invoiceType === 'sale' ? 'New sales invoice' : 'New purchase invoice';
+  document.getElementById('invoice-party-label').textContent = invoiceType === 'sale' ? 'Customer' : 'Supplier';
+  fillEntityField(invoiceForm.entity_id);
+  invoiceForm.party_id.innerHTML = parties.map((p) => `<option value="${p.id}" data-currency="${p.currency}">${esc(p.name)} (${p.currency})</option>`).join('');
+  invoiceForm.currency.innerHTML = currencyOptions(BASE);
+  invoiceForm.invoice_date.value = today();
+  document.getElementById('invoice-error').textContent = '';
+  document.querySelector('#invoice-lines tbody').innerHTML = '';
+  addInvoiceLine();
+  syncInvoiceCurrency();
+  const dlg = document.getElementById('dialog-invoice');
+  // With an uploaded PDF: show it next to the form.
+  document.getElementById('invoice-preview').hidden = !recognition;
+  document.getElementById('recognition-banner').hidden = !recognition;
+  dlg.classList.toggle('with-preview', Boolean(recognition));
+  document.getElementById('invoice-preview-frame').src = recognition ? recognition.fileUrl : 'about:blank';
+  invoiceForm.querySelectorAll('.rec-learned, .rec-generic, .rec-guess, .rec-missing').forEach((el) => el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing'));
+  if (suggestion) applySuggestion(suggestion);
+  dlg.showModal();
+}
+
+document.querySelectorAll('[data-new-invoice]').forEach((btn) => btn.addEventListener('click', () => openInvoiceDialog(btn.dataset.newInvoice)));
 
 function addInvoiceLine() {
   const tbody = document.querySelector('#invoice-lines tbody');
@@ -547,7 +559,9 @@ function updateInvoiceTotals() {
   }
   const total = round2(net + vat);
   document.getElementById('invoice-total-hint').innerHTML =
-    `Net ${fmt(net, ccy)} + VAT ${fmt(vat, ccy)} = <strong>${fmt(total, ccy)}</strong>` + (ccy !== BASE ? `  →  approx. ${fmt(total * rate, BASE)}` : '');
+    `Net ${fmt(net, ccy)} + VAT ${fmt(vat, ccy)} = <strong>${fmt(total, ccy)}</strong>` +
+    (ccy !== BASE ? `  →  approx. ${fmt(total * rate, BASE)}` : '') +
+    recognitionTotalCheck(total);
 }
 invoiceForm.addEventListener('input', updateInvoiceTotals);
 
@@ -580,14 +594,25 @@ invoiceForm.addEventListener('submit', async (e) => {
     party_id: Number(invoiceForm.party_id.value),
     invoice_number: invoiceForm.invoice_number.value.trim(),
     invoice_date: invoiceForm.invoice_date.value,
+    due_date: invoiceForm.due_date.value || null,
     currency: invoiceForm.currency.value,
     exchange_rate: parseFloat(invoiceForm.exchange_rate.value),
     notes: invoiceForm.notes.value.trim(),
     lines: invoiceLinesFromForm().map(({ row, ...l }) => l),
+    document_id: recognition ? recognition.document_id : null,
   };
   try {
-    await post('/api/invoices', payload);
+    const saved = await post('/api/invoices', payload);
     document.getElementById('dialog-invoice').close();
+    if (saved.learning) {
+      const l = saved.learning;
+      showNotice(
+        `Invoice ${saved.invoice_number} saved with its PDF. ${l.correct} of ${l.checked} fields were recognised correctly` +
+          (l.corrected.length ? ` (you corrected: ${l.corrected.join(', ').replace(/_/g, ' ')})` : '') +
+          (l.learned.length ? `. Learned for ${saved.party_name}: ${l.learned.join('; ')}.` : '.')
+      );
+    }
+    recognition = null;
     refreshActive();
   } catch (err) {
     document.getElementById('invoice-error').textContent = err.message;
@@ -1391,6 +1416,7 @@ async function loadSetup() {
   renderPeriods();
   await loadVatCodes();
   renderVatCodes();
+  await loadRecognitionProfiles();
   if (isAdmin()) await loadUsers();
 
   renderFxStatus(await api('/api/fx/status'));
@@ -2487,6 +2513,227 @@ reclassForm.addEventListener('submit', async (e) => {
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
+
+// ---------- Invoice recognition (upload a PDF) ----------
+
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let recognition = null; // { document_id, suggestion, fileUrl } while an invoice is made from a PDF
+
+/**
+ * The PDF's text as lines in reading order (top to bottom, left to right).
+ * Text separated by a wide gap on the same line is a different column: joined with " | ".
+ */
+async function pdfTextLines(buffer) {
+  const pdfjs = window.pdfjsLib;
+  if (!pdfjs) throw new Error('The PDF reader could not be loaded - check your internet connection');
+  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  const doc = await pdfjs.getDocument({ data: buffer }).promise;
+  const lines = [];
+  for (let p = 1; p <= Math.min(doc.numPages, 5); p++) {
+    const content = await (await doc.getPage(p)).getTextContent();
+    const rows = [];
+    for (const it of content.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const [x, y] = [it.transform[4], it.transform[5]];
+      let row = rows.find((r) => Math.abs(r.y - y) < 3);
+      if (!row) rows.push((row = { y, items: [] }));
+      row.items.push({ x, end: x + it.width, s: it.str });
+    }
+    rows.sort((a, b) => b.y - a.y);
+    for (const r of rows) {
+      r.items.sort((a, b) => a.x - b.x);
+      let line = '';
+      let prevEnd = null;
+      for (const it of r.items) {
+        if (prevEnd !== null) line += it.x - prevEnd > 15 ? ' | ' : it.x - prevEnd > 1 ? ' ' : '';
+        line += it.s;
+        prevEnd = it.end;
+      }
+      lines.push(line.replace(/\s+/g, ' ').trim());
+    }
+  }
+  return lines;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1]);
+    r.onerror = () => reject(new Error('The file could not be read'));
+    r.readAsDataURL(file);
+  });
+}
+
+function showNotice(message, kind = 'ok') {
+  const el = document.getElementById('notice-banner');
+  el.textContent = message;
+  el.className = `notice-banner ${kind}`;
+  el.hidden = false;
+  clearTimeout(showNotice.timer);
+  showNotice.timer = setTimeout(() => (el.hidden = true), 12000);
+}
+
+async function recogniseFile(file) {
+  const status = document.getElementById('recognise-status');
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return showNotice('Please choose a PDF file.', 'bad');
+  if (file.size > 3 * 1024 * 1024) return showNotice('The PDF is larger than 3 MB.', 'bad');
+  status.textContent = `Reading ${file.name}…`;
+  try {
+    const [base64, lines] = await Promise.all([fileToBase64(file), file.arrayBuffer().then(pdfTextLines)]);
+    status.textContent = 'Recognising…';
+    const s = await post('/api/recognition/extract', {
+      filename: file.name,
+      pdf_base64: base64,
+      lines,
+      entity_id: Number(CURRENT_ENTITY || META.entities[0].id),
+    });
+    status.textContent = '';
+    if (recognition && recognition.fileUrl) URL.revokeObjectURL(recognition.fileUrl);
+    recognition = { document_id: s.document_id, suggestion: s, fileUrl: URL.createObjectURL(file), filename: file.name };
+    await openInvoiceDialog('purchase', s);
+  } catch (err) {
+    status.textContent = '';
+    showNotice(`Could not read ${file.name}: ${err.message}`, 'bad');
+  }
+}
+
+document.getElementById('btn-upload-invoice').addEventListener('click', () => document.getElementById('invoice-pdf-input').click());
+document.getElementById('invoice-pdf-input').addEventListener('change', (e) => {
+  recogniseFile(e.target.files[0]);
+  e.target.value = '';
+});
+// Drop a PDF anywhere on the purchase invoices page.
+const purchasesView = document.getElementById('view-purchases');
+purchasesView.addEventListener('dragover', (e) => {
+  if (!isAdmin()) return;
+  e.preventDefault();
+  purchasesView.classList.add('drop-target');
+});
+purchasesView.addEventListener('dragleave', () => purchasesView.classList.remove('drop-target'));
+purchasesView.addEventListener('drop', (e) => {
+  if (!isAdmin()) return;
+  e.preventDefault();
+  purchasesView.classList.remove('drop-target');
+  recogniseFile(e.dataTransfer.files[0]);
+});
+
+const SOURCE_TEXT = {
+  learned: 'learned from earlier invoices of this supplier',
+  generic: 'recognised',
+  calculated: 'calculated from the other amounts',
+  supplier: "the supplier's usual value",
+  guess: 'a guess - please check',
+  default: 'a default - please check',
+};
+const sourceClass = (src) => (src === 'learned' ? 'rec-learned' : src === 'guess' || src === 'default' ? 'rec-guess' : 'rec-generic');
+
+function mark(el, field) {
+  el.classList.remove('rec-learned', 'rec-generic', 'rec-guess', 'rec-missing');
+  el.removeAttribute('title');
+  if (!recognition) return;
+  const f = field ? recognition.suggestion[field] : null;
+  if (!f) {
+    el.classList.add('rec-missing');
+    el.title = 'Not found on the invoice - please fill in';
+    return;
+  }
+  el.classList.add(sourceClass(f.source));
+  el.title = `${SOURCE_TEXT[f.source] || f.source}${f.label ? ` (next to "${f.label}")` : ''}`;
+}
+
+/** Fill the invoice form from a recognition suggestion. */
+function applySuggestion(s) {
+  const f = invoiceForm;
+  if (s.supplier) f.party_id.value = String(s.supplier.value);
+  syncInvoiceCurrency();
+  if (s.currency) f.currency.value = s.currency.value;
+  if (s.invoice_number) f.invoice_number.value = s.invoice_number.value;
+  if (s.invoice_date) f.invoice_date.value = s.invoice_date.value;
+  f.due_date.value = s.due_date ? s.due_date.value : '';
+  document.querySelector('#invoice-lines tbody').innerHTML = '';
+  for (const l of s.lines) {
+    addInvoiceLine();
+    const tr = document.querySelector('#invoice-lines tbody tr:last-child');
+    tr.querySelector('.l-desc').value = l.description || '';
+    tr.querySelector('.l-account').value = l.account_code;
+    syncCcSelect(tr.querySelector('.l-account'), tr.querySelector('.l-cc'));
+    tr.querySelector('.l-cc').value = l.cost_center || '';
+    tr.querySelector('.l-net').value = l.net_amount ? l.net_amount.toFixed(2) : '';
+    if (l.vat_code) {
+      tr.querySelector('.l-vat-code').value = l.vat_code;
+      tr.querySelector('.l-vat-code').dataset.touched = '1';
+    }
+    tr.querySelectorAll('.l-account, .l-cc').forEach((el) => {
+      el.classList.add(sourceClass(l.source));
+      el.title = SOURCE_TEXT[l.source];
+    });
+    mark(tr.querySelector('.l-net'), 'net');
+    mark(tr.querySelector('.l-vat-code'), 'vat_code');
+  }
+  mark(f.party_id, 'supplier');
+  mark(f.invoice_number, 'invoice_number');
+  mark(f.invoice_date, 'invoice_date');
+  if (s.due_date) mark(f.due_date, 'due_date');
+  mark(f.currency, 'currency');
+  refreshInvoiceRate();
+  updateInvoiceTotals();
+
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const who = s.supplier ? `<strong>${esc(s.supplier.name)}</strong> (found by ${esc(s.supplier.reasons.join(', '))})` : '<strong class="neg">no supplier recognised - please choose one</strong>';
+  const history = s.profile
+    ? `Learned from ${s.profile.documents} earlier invoice(s) of this supplier${s.profile.accuracy !== null ? `, ${pct(s.profile.accuracy)} of fields right so far` : ''}.`
+    : 'First invoice from this supplier: your corrections teach the app for next time.';
+  document.getElementById('recognition-banner').innerHTML = `
+    <div>Read <strong>${esc(recognition.filename)}</strong>: ${who}. ${history}</div>
+    ${s.no_text ? '<div class="neg">This PDF has no text layer (probably a scan), so nothing could be read - please fill in the invoice.</div>' : ''}
+    ${s.total && s.total.mismatch ? '<div class="neg">The net and VAT on the invoice don’t add up to its total - please check the amounts.</div>' : ''}
+    <div class="legend"><span class="rec-learned">learned</span> <span class="rec-generic">recognised</span> <span class="rec-guess">please check</span> <span class="rec-missing">not found</span> - hover a field to see why. Correct anything wrong, then save.</div>`;
+}
+
+/** Totals the form will book vs the total printed on the invoice. */
+function recognitionTotalCheck(formTotal) {
+  if (!recognition || !recognition.suggestion.total) return '';
+  const t = recognition.suggestion.total.value;
+  const ok = Math.abs(t - formTotal) < 0.005;
+  return ` · invoice says ${fmt(t, invoiceForm.currency.value)} <strong class="${ok ? 'pos' : 'neg'}">${ok ? '✓' : '≠ check the lines'}</strong>`;
+}
+
+// ----- Setup: what recognition has learned -----
+
+async function loadRecognitionProfiles() {
+  const profiles = await api('/api/recognition/profiles');
+  const tbody = document.querySelector('#recognition-table tbody');
+  const labelText = (labels) =>
+    Object.entries(labels)
+      .map(([k, v]) => `${k.replace('_', ' ')}: "${v[0]}"`)
+      .join(', ');
+  tbody.innerHTML =
+    profiles
+      .map(
+        (p) => `<tr>
+        <td><strong>${esc(p.supplier_name)}</strong></td>
+        <td class="num">${p.documents}</td>
+        <td class="num">${p.accuracy === null ? '' : Math.round(p.accuracy * 100) + '%'}</td>
+        <td>${p.last ? `${p.last.correct}/${p.last.checked} right${p.last.corrected.length ? ` <span class="muted">(corrected: ${esc(p.last.corrected.join(', ').replace(/_/g, ' '))})</span>` : ''}` : ''}</td>
+        <td class="muted">${esc(labelText(p.labels))}${p.date_order ? ` · dates ${p.date_order === 'MDY' ? 'm/d/y' : 'd/m/y'}` : ''}</td>
+        <td class="muted">${p.defaults ? esc(`${p.defaults.account_code}${p.defaults.cost_center ? ' / ' + p.defaults.cost_center : ''}${p.defaults.vat_code ? ' / ' + p.defaults.vat_code : ''}`) : ''}</td>
+        <td class="admin-only"><button type="button" class="btn btn-small" data-forget="${p.supplier_id}">Forget</button></td>
+      </tr>`
+      )
+      .join('') || '<tr><td colspan="7" class="hint">Nothing learned yet: upload a supplier invoice PDF under Purchase invoices.</td></tr>';
+  tbody.querySelectorAll('[data-forget]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.confirm !== '1') {
+        btn.dataset.confirm = '1';
+        btn.textContent = 'Really forget?';
+        return;
+      }
+      await post(`/api/recognition/profiles/${btn.dataset.forget}`, {}, 'DELETE');
+      loadRecognitionProfiles();
+    })
+  );
+}
 
 // ---------- Setup: VAT codes ----------
 

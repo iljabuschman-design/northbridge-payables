@@ -393,3 +393,25 @@ select:disabled { opacity: .7; }
 
 .problem-banner { position: sticky; top: 0; z-index: 50; background: var(--red-bg); color: var(--red); text-align: center; font-size: 13.5px; font-weight: 600; padding: 8px 16px; border-bottom: 1px solid #f5c2bd; }
 .problem-banner .btn { margin-left: 10px; }
+
+/* Invoice recognition */
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.drop-target { outline: 3px dashed var(--brand); outline-offset: 6px; border-radius: 8px; }
+dialog.with-preview { width: min(1400px, 98vw); }
+.invoice-layout { display: grid; grid-template-columns: 1fr; }
+dialog.with-preview .invoice-layout { grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.1fr); }
+.invoice-preview { background: #eceff3; border-right: 1px solid var(--border); min-height: 70vh; }
+.invoice-preview iframe { width: 100%; height: 100%; min-height: 70vh; border: 0; display: block; }
+@media (max-width: 900px) { dialog.with-preview .invoice-layout { grid-template-columns: 1fr; } .invoice-preview, .invoice-preview iframe { min-height: 50vh; } }
+.recognition-banner { background: var(--blue-bg); border-radius: 8px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.recognition-banner .legend { font-size: 12px; color: var(--muted); }
+.recognition-banner .legend span { padding: 1px 6px; border-radius: 4px; border: 2px solid transparent; }
+.rec-learned { border-color: #16a34a !important; box-shadow: 0 0 0 1px #16a34a33; }
+.rec-generic { border-color: #2a78d6 !important; }
+.rec-guess { border-color: #d97706 !important; background: #fffbeb; }
+.rec-missing { border-color: #dc2626 !important; background: #fef2f2; }
+.legend .rec-learned { border-color: #16a34a; } .legend .rec-generic { border-color: #2a78d6; } .legend .rec-guess { border-color: #d97706; } .legend .rec-missing { border-color: #dc2626; }
+.notice-banner { position: sticky; top: 0; z-index: 51; text-align: center; font-size: 13.5px; font-weight: 600; padding: 9px 16px; }
+.notice-banner.ok { background: var(--green-bg); color: var(--green); border-bottom: 1px solid #bbe5cc; }
+.notice-banner.bad { background: var(--red-bg); color: var(--red); border-bottom: 1px solid #f5c2bd; }
+.role-viewer #btn-upload-invoice { display: none !important; }

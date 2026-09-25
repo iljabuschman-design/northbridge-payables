@@ -9,6 +9,7 @@ const fx = require('./fx');
 const bank = require('./bank');
 const assets = require('./assets');
 const auth = require('./auth');
+const recognition = require('./recognition');
 const vat = require('./vat');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
@@ -199,14 +200,37 @@ const routes = [
 
   // Purchase & sales invoices
   { method: 'GET', pattern: /^\/api\/invoices$/, handler: async (req, m, q) => acct.listInvoices(q.get('type') || null, q.get('entity')) },
-  { method: 'POST', pattern: /^\/api\/invoices$/, handler: json((body) => acct.createInvoice(body)) },
+  {
+    method: 'POST',
+    pattern: /^\/api\/invoices$/,
+    handler: json(async (body) => {
+      const invoice = await acct.createInvoice(body);
+      // Made from an uploaded PDF: attach it and let recognition learn from the final values.
+      const learning = body.document_id ? await recognition.learnFromInvoice(body.document_id, invoice, body) : null;
+      return { ...invoice, learning };
+    }),
+  },
+
+  // Invoice recognition (uploaded PDFs)
+  { method: 'POST', pattern: /^\/api\/recognition\/extract$/, handler: json((body, m, q, req) => recognition.recognise(body, req.user)) },
+  { method: 'GET', pattern: /^\/api\/recognition\/profiles$/, handler: async () => recognition.listProfiles() },
+  { method: 'DELETE', pattern: /^\/api\/recognition\/profiles\/(\d+)$/, handler: async (req, m) => recognition.forgetProfile(m[1]) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/documents\/(\d+)\/file$/,
+    handler: async (req, m) => {
+      const doc = await recognition.getDocument(m[1]);
+      if (!doc) throw acct.httpError(404, 'Document not found');
+      return { __file: { data: Buffer.from(doc.data), type: doc.content_type, name: doc.filename } };
+    },
+  },
   {
     method: 'GET',
     pattern: /^\/api\/invoices\/(\d+)$/,
     handler: async (req, m) => {
       const detail = await acct.invoiceDetail(Number(m[1]));
       if (!detail) throw acct.httpError(404, 'Invoice not found');
-      return detail;
+      return { ...detail, document: await recognition.documentForInvoice(Number(m[1])) };
     },
   },
   {
@@ -342,6 +366,17 @@ async function handler(req, res) {
       if (!match) continue;
       try {
         const result = await route.handler(req, match, parsed.searchParams);
+        if (result && result.__file) {
+          const f = result.__file;
+          res.writeHead(200, {
+            'Content-Type': f.type,
+            'Content-Length': f.data.length,
+            'Content-Disposition': `inline; filename="${String(f.name).replace(/[^\w.\- ]/g, '_')}"`,
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          return res.end(f.data);
+        }
         if (result && result.__cookie) {
           res.setHeader('Set-Cookie', result.__cookie);
           return sendJson(res, 200, result.body);
