@@ -344,7 +344,12 @@ async function handler(req, res) {
       } catch (err) {
         const status = err.status || 500;
         if (status >= 500) console.error(err);
-        return sendJson(res, status, { error: err.message || 'Internal server error' });
+        // Server-side failures are almost always the database connection (e.g. while it wakes up).
+        const message =
+          status < 500 || err.code === 'COMMIT_UNKNOWN'
+            ? err.message || 'Something went wrong'
+            : 'The server could not reach the database just now. Please try again in a moment.';
+        return sendJson(res, status, { error: message });
       }
     }
     return sendJson(res, 404, { error: 'Not found' });

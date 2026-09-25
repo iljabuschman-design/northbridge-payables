@@ -51,7 +51,7 @@ async function api(pathname, opts = {}) {
   const res = await fetch(pathname, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && pathname !== '/api/login') showLogin();
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
 }
 
@@ -233,7 +233,11 @@ function showTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== `view-${name}`));
-  if (LOADERS[name]) LOADERS[name]().catch((err) => console.error(err));
+  if (LOADERS[name])
+    LOADERS[name]().catch((err) => {
+      console.error(err);
+      if (err.status !== 401 && err.status !== 403) showProblem(err.message || 'The server could not be reached.');
+    });
 }
 
 // Account links are plain #account/<code> links; following one closes any open dialog.
@@ -2490,10 +2494,12 @@ document.getElementById('form-login').addEventListener('submit', async (e) => {
     return;
   }
   // Check the browser kept the login cookie before continuing.
-  const me = await fetch('/api/me', { cache: 'no-store' });
-  if (!me.ok) {
+  const me = await fetch('/api/me', { cache: 'no-store' }).catch(() => null);
+  if (!me || !me.ok) {
     errEl.textContent =
-      'Your password was accepted, but this browser did not keep the login. Please allow cookies for this site (or leave private/incognito mode) and try again.';
+      me && me.status === 401
+        ? 'Your password was accepted, but this browser did not keep the login. Please allow cookies for this site (or leave private/incognito mode) and try again.'
+        : 'Your password was accepted, but the server could not finish logging you in. Please try again in a moment.';
     button.disabled = false;
     return;
   }
@@ -2615,13 +2621,31 @@ document.getElementById('form-user').addEventListener('submit', async (e) => {
   }
 });
 
+/** A notice at the top when the server has a problem, with a way to try again. */
+function showProblem(message) {
+  const el = document.getElementById('problem-banner');
+  el.querySelector('span').textContent = message;
+  el.hidden = false;
+}
+document.querySelector('#problem-banner button').addEventListener('click', () => location.reload());
+
 /** Load the logged-in user and start the app (on page load, or right after logging in). */
 async function startApp() {
   try {
     CURRENT_USER = await api('/api/me');
-  } catch {
-    return; // not logged in: the login screen is showing
+  } catch (err) {
+    // 401: the login screen is showing. Anything else: the server has a problem.
+    if (err.status !== 401) showProblem(err.message || 'The server could not be reached.');
+    return;
   }
+  try {
+    await finishStart();
+  } catch (err) {
+    showProblem(err.message || 'The server could not be reached.');
+  }
+}
+
+async function finishStart() {
   document.body.classList.add(`role-${CURRENT_USER.role}`);
   document.getElementById('user-menu').hidden = false;
   document.getElementById('user-name').textContent = CURRENT_USER.name;

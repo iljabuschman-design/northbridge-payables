@@ -388,3 +388,6 @@ select:disabled { opacity: .7; }
 .role-viewer #btn-new-account, .role-viewer .edit-account, .role-viewer [data-new-party], .role-viewer [data-edit-party],
 .role-viewer #form-cc, .role-viewer [data-cc-toggle], .role-viewer [data-period], .role-viewer #btn-refresh-rates { display: none !important; }
 .role-viewer .cat-select { pointer-events: none; background: transparent; border-color: transparent; }
+
+.problem-banner { position: sticky; top: 0; z-index: 50; background: var(--red-bg); color: var(--red); text-align: center; font-size: 13.5px; font-weight: 600; padding: 8px 16px; border-bottom: 1px solid #f5c2bd; }
+.problem-banner .btn { margin-left: 10px; }

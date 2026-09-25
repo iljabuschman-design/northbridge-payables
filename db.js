@@ -325,37 +325,76 @@ if (USE_POSTGRES) {
     connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
     max: 3,
     ssl: { rejectUnauthorized: false },
+    // Vercel pauses the function between requests and Neon's free database sleeps when idle:
+    // don't keep connections around for long, and give a sleeping database time to wake up.
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 15000,
+    keepAlive: true,
   });
+  // A connection that drops while idle must not crash the process.
+  pool.on('error', (err) => console.error('Idle database connection closed:', err.message));
+
+  // Connection problems (as opposed to errors in the SQL itself) are worth another try.
+  const TRANSIENT = /ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|EAI_AGAIN|socket disconnected|Connection terminated|timeout exceeded|timeout expired|terminating connection|server closed the connection|Connection ended/i;
+  const isTransient = (err) => Boolean(err) && err.code !== 'COMMIT_UNKNOWN' && (TRANSIENT.test(err.message || '') || ['57P01', '57P02', '57P03', '08000', '08001', '08003', '08006'].includes(err.code));
+  async function withRetry(what, fn) {
+    const delays = [300, 1000, 2500, 4000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (!isTransient(err) || attempt >= delays.length) throw err;
+        console.warn(`Database connection problem during ${what} (${err.message}); retry ${attempt + 1}`);
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
+    }
+  }
+
   const toPg = (sql) => {
     let i = 0;
     return sql.replace(/\?/g, () => `$${++i}`);
   };
-  const conn = () => txStore.getStore() || pool;
   driver = {
     kind: 'postgres',
     async all(sql, params) {
-      return (await conn().query(toPg(sql), params)).rows;
+      const client = txStore.getStore();
+      // Inside a transaction the whole transaction is retried instead (see below).
+      if (client) return (await client.query(toPg(sql), params)).rows;
+      return withRetry('query', async () => (await pool.query(toPg(sql), params)).rows);
     },
     async exec(sql) {
-      await conn().query(sql);
+      const client = txStore.getStore();
+      if (client) await client.query(sql);
+      else await withRetry('statement', () => pool.query(sql));
     },
-    async transaction(fn) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await txStore.run(client, fn);
-        await client.query('COMMIT');
-        return result;
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw err;
-      } finally {
-        client.release();
-      }
+    // A transaction that fails on a connection problem was rolled back, so it is safe to run
+    // it again from the start - unless the problem hit while committing (outcome unknown).
+    transaction(fn) {
+      return withRetry('transaction', async () => {
+        const client = await pool.connect();
+        let committing = false;
+        let broken = false;
+        try {
+          await client.query('BEGIN');
+          const result = await txStore.run(client, fn);
+          committing = true;
+          await client.query('COMMIT');
+          return result;
+        } catch (err) {
+          broken = isTransient(err);
+          if (!broken) await client.query('ROLLBACK').catch(() => {});
+          if (committing && broken) {
+            throw Object.assign(new Error('The database connection dropped while saving - please check whether the change was saved'), { code: 'COMMIT_UNKNOWN' });
+          }
+          throw err;
+        } finally {
+          client.release(broken);
+        }
+      });
     },
     // Serialise one-off jobs (seeding) across function instances starting at the same time.
     async lock(key) {
-      await conn().query('SELECT pg_advisory_xact_lock($1)', [key]);
+      await (txStore.getStore() || pool).query('SELECT pg_advisory_xact_lock($1)', [key]);
     },
     ddl: (sql) => sql.replace(/INTEGER PRIMARY KEY AUTOINCREMENT/g, 'SERIAL PRIMARY KEY').replace(/ REAL\b/g, ' DOUBLE PRECISION'),
   };
