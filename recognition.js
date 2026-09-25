@@ -394,9 +394,12 @@ async function forgetProfile(supplierId) {
  * Store an uploaded PDF and suggest the invoice fields.
  *   pdf_base64: the file; lines: its text in reading order (from pdf.js in the browser).
  */
-async function recognise({ filename, pdf_base64, lines, items, entity_id }, user) {
+async function recognise({ document_id, filename, pdf_base64, lines, items, entity_id }, user) {
   const entity = await acct.requireEntity(entity_id);
-  const pdf = Buffer.from(String(pdf_base64 || ''), 'base64');
+  // A document already stored (e.g. from the email inbox) is recognised in place.
+  const existing = document_id ? await db.get('SELECT id, filename, data FROM documents WHERE id = ?', Number(document_id)) : null;
+  if (document_id && !existing) throw httpError(404, 'Document not found');
+  const pdf = existing ? Buffer.from(existing.data) : Buffer.from(String(pdf_base64 || ''), 'base64');
   if (!pdf.length) throw httpError(400, 'The file is empty');
   if (pdf.length > MAX_PDF_BYTES) throw httpError(400, 'The PDF is larger than 3 MB');
   if (pdf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'This is not a PDF file');
@@ -459,8 +462,15 @@ async function recognise({ filename, pdf_base64, lines, items, entity_id }, user
     profile: profile ? { documents: profile.documents, accuracy: profile.fields_checked ? round2(profile.fields_correct / profile.fields_checked) : null } : null,
   };
 
+  if (existing) {
+    await db.run(
+      'UPDATE documents SET entity_id = ?, text_lines = ?, items_json = ?, suggestion_json = ?, uploaded_by = COALESCE(uploaded_by, ?) WHERE id = ?',
+      entity.id, JSON.stringify(textLines), JSON.stringify(textItems), JSON.stringify(suggestion), user ? user.name : null, existing.id
+    );
+    return { document_id: existing.id, ...suggestion };
+  }
   const { row } = await db.run(
-    'INSERT INTO documents (entity_id, filename, content_type, size, data, text_lines, items_json, suggestion_json, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    "INSERT INTO documents (entity_id, filename, content_type, size, data, text_lines, items_json, suggestion_json, uploaded_by, source, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'processing')",
     entity.id,
     String(filename || 'invoice.pdf').slice(0, 200),
     'application/pdf',
@@ -521,7 +531,7 @@ function locate(lines, spellings, last = false) {
 async function learnFromInvoice(documentId, invoice, payload) {
   const doc = await db.get('SELECT * FROM documents WHERE id = ?', Number(documentId));
   if (!doc) return null;
-  await db.run('UPDATE documents SET invoice_id = ? WHERE id = ?', invoice.id, doc.id);
+  await db.run("UPDATE documents SET invoice_id = ?, status = 'processed' WHERE id = ?", invoice.id, doc.id);
   if (invoice.type !== 'purchase') return null;
   const lines = JSON.parse(doc.text_lines || '[]');
   const sug = JSON.parse(doc.suggestion_json || '{}');

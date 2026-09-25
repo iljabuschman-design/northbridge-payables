@@ -12,6 +12,8 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
+    "imapflow": "^1.7.8",
+    "mailparser": "^3.9.28",
     "pg": "^8.23.0"
   }
 }

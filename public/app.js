@@ -230,7 +230,10 @@ const LOADERS = {
   kpis: loadKpis,
   assets: loadAssets,
   sales: () => loadInvoices('sale'),
-  purchases: () => loadInvoices('purchase'),
+  purchases: async () => {
+    await loadInvoices('purchase');
+    loadInbox('if_due').catch((err) => console.error(err));
+  },
   bank: loadBank,
   journals: loadJournals,
   ledger: loadLedger,
@@ -2660,16 +2663,18 @@ function showNotice(message, kind = 'ok') {
   showNotice.timer = setTimeout(() => (el.hidden = true), 12000);
 }
 
-async function recogniseFile(file) {
+async function recogniseFile(file, documentId = null) {
   const status = document.getElementById('recognise-status');
   if (!file) return;
   if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return showNotice('Please choose a PDF file.', 'bad');
   if (file.size > 3 * 1024 * 1024) return showNotice('The PDF is larger than 3 MB.', 'bad');
   status.textContent = `Reading ${file.name}…`;
   try {
-    const [base64, read] = await Promise.all([fileToBase64(file), file.arrayBuffer().then(pdfRead)]);
+    // A PDF from the email inbox is already on the server: only its text is sent.
+    const [base64, read] = await Promise.all([documentId ? null : fileToBase64(file), file.arrayBuffer().then(pdfRead)]);
     status.textContent = 'Recognising…';
     const s = await post('/api/recognition/extract', {
+      document_id: documentId,
       filename: file.name,
       pdf_base64: base64,
       lines: read.lines,
@@ -2684,6 +2689,71 @@ async function recogniseFile(file) {
     showNotice(`Could not read ${file.name}: ${err.message}`, 'bad');
   }
 }
+
+// ----- Email inbox -----
+
+async function loadInbox(check = null) {
+  if (!isAdmin()) return;
+  renderInbox(await api('/api/inbox'));
+  if (!check) return;
+  const status = document.getElementById('inbox-status');
+  status.textContent = 'Checking mailbox…';
+  try {
+    const r = await post('/api/inbox/check', { if_due: check === 'if_due' });
+    if (r.added) showNotice(`${r.added} new invoice PDF(s) arrived by email.`);
+    if (r.error) showNotice(r.error, 'bad');
+  } finally {
+    renderInbox(await api('/api/inbox'));
+  }
+}
+
+function renderInbox(data) {
+  document.getElementById('inbox-address').textContent = data.address ? `· ${data.address}` : '';
+  document.getElementById('inbox-status').textContent = data.last_check_at
+    ? `Last checked ${new Date(data.last_check_at.replace(' ', 'T') + 'Z').toLocaleString()}${data.last_result ? ` - ${data.last_result}` : ''}`
+    : '';
+  document.getElementById('btn-check-mailbox').hidden = !data.configured;
+  document.getElementById('inbox-hint').textContent = data.configured
+    ? 'Invoices e-mailed to this address appear here. Process opens one next to the invoice form, the same way as an upload.'
+    : 'Not connected yet: the app needs a Google app password for the invoice mailbox (see Other → Assumptions → Email inbox).';
+  const tbody = document.querySelector('#inbox-table tbody');
+  tbody.innerHTML =
+    data.documents
+      .map(
+        (d) => `<tr>
+        <td class="nowrap">${esc((d.email_date || d.created_at || '').slice(0, 16))} UTC</td>
+        <td>${esc(d.email_from || '')}</td>
+        <td>${esc(d.email_subject || '')}</td>
+        <td><a href="/api/documents/${d.id}/file" target="_blank" rel="noopener">📄 ${esc(d.filename)}</a></td>
+        <td class="nowrap"><button type="button" class="btn btn-small btn-primary" data-process-doc="${d.id}" data-filename="${esc(d.filename)}">Process</button>
+          <button type="button" class="btn btn-small" data-dismiss-doc="${d.id}">Dismiss</button></td>
+      </tr>`
+      )
+      .join('') || `<tr><td colspan="5" class="hint">${data.configured ? 'No invoices waiting.' : ''}</td></tr>`;
+  tbody.querySelectorAll('[data-process-doc]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/documents/${btn.dataset.processDoc}/file`);
+        if (!res.ok) throw new Error('The PDF could not be loaded');
+        const file = new File([await res.blob()], btn.dataset.filename, { type: 'application/pdf' });
+        await recogniseFile(file, Number(btn.dataset.processDoc));
+      } catch (err) {
+        showNotice(err.message, 'bad');
+      } finally {
+        btn.disabled = false;
+      }
+    })
+  );
+  tbody.querySelectorAll('[data-dismiss-doc]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      await post(`/api/inbox/${btn.dataset.dismissDoc}/dismiss`, {});
+      loadInbox();
+    })
+  );
+}
+
+document.getElementById('btn-check-mailbox').addEventListener('click', () => loadInbox('now'));
 
 // ----- Teaching positions: click a field, then drag a box on the PDF -----
 

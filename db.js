@@ -148,7 +148,23 @@ CREATE TABLE IF NOT EXISTS documents (
   suggestion_json TEXT,
   invoice_id INTEGER REFERENCES invoices(id),
   uploaded_by TEXT,
+  -- 'upload' or 'email'; status 'inbox' = waiting to be processed, 'processed', 'dismissed'
+  source TEXT,
+  status TEXT,
+  email_from TEXT,
+  email_subject TEXT,
+  email_date TEXT,
+  message_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Where reading the invoice mailbox got to (see mailbox.js).
+CREATE TABLE IF NOT EXISTS mailbox_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  uidvalidity TEXT,
+  last_uid INTEGER NOT NULL DEFAULT 0,
+  last_check_at TEXT,
+  last_result TEXT
 );
 
 -- What invoice recognition has learned per supplier (labels, formats, how to book).
@@ -358,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'deletions', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();

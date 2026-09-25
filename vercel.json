@@ -17,5 +17,11 @@
   },
   "regions": [
     "lhr1"
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/mailbox",
+      "schedule": "0 6 * * *"
+    }
   ]
 }

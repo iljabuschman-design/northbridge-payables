@@ -1215,6 +1215,9 @@ async function setUpVatCodes() {
   await db.addColumn('invoice_lines', 'vat_code', 'TEXT');
   await db.addColumn('invoices', 'due_date', 'TEXT');
   await db.addColumn('documents', 'items_json', 'TEXT');
+  for (const col of ['source', 'status', 'email_from', 'email_subject', 'email_date', 'message_id']) await db.addColumn('documents', col, 'TEXT');
+  // The same attachment of the same email is only imported once.
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_documents_message ON documents (message_id, filename)');
   if (!(await getCompany())) return; // empty database: seeding comes first
   if ((await db.get('SELECT COUNT(*) AS n FROM vat_codes')).n > 0) return;
   await transaction(async () => {

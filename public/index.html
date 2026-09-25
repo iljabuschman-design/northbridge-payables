@@ -161,6 +161,22 @@
         <button class="btn btn-primary" data-new-invoice="purchase">+ New purchase invoice</button>
       </div>
     </div>
+    <div class="panel inbox-panel admin-only" id="inbox-panel">
+      <div class="panel-header wrap">
+        <h2>📧 Email inbox <span class="muted inbox-address" id="inbox-address"></span></h2>
+        <div class="header-actions">
+          <span class="muted" id="inbox-status"></span>
+          <button class="btn btn-small" id="btn-check-mailbox">Check mailbox now</button>
+        </div>
+      </div>
+      <p class="hint" id="inbox-hint"></p>
+      <div class="table-wrap">
+        <table class="table" id="inbox-table">
+          <thead><tr><th>Received</th><th>From</th><th>Subject</th><th>PDF</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
     <div class="table-wrap"><table class="table invoices-table" id="purchases-table"></table></div>
   </section>
 
@@ -564,6 +580,9 @@
       <h3>Invoice recognition</h3>
       <p>For each supplier you can also <strong>mark where a field is</strong>: with the PDF shown next to the form, click a field (invoice number, dates, description, net amount or total) and drag a box around its value on the PDF. The app reads the text in the box and fills the field; when the invoice is saved, the position is stored for that supplier and next time that spot is read first, before any label rules. Positions are kept as fractions of the page, so they work whatever size the PDF is shown at, but they assume that supplier's layout stays the same.</p>
       <p>Supplier invoices can be uploaded as PDF (Purchase invoices → Upload invoice PDF, or drop the file on the page). The browser reads the PDF's text with pdf.js; the server then recognises the supplier (by VAT number, IBAN, bank account, name or learned letterhead), invoice number, invoice and due date, currency, net, VAT and total, and suggests a VAT code from the rate. It uses built-in labels in English, German, French and Dutch. When the invoice is saved, the app compares what was saved with what it suggested and learns per supplier: the labels that supplier uses, its date format, its currency, its letterhead and how its invoices are booked. The PDF is kept with the invoice. Scanned PDFs without a text layer can't be read (that would need OCR or an AI service). Amounts per invoice line aren't split out yet: the net amount goes on one line.</p>
+
+      <h3>Email inbox</h3>
+      <p>Supplier invoices e-mailed to the invoice mailbox are picked up automatically: the app reads the Gmail inbox (IMAP, with a Google app password - never the normal password) and puts every PDF attachment in the Email inbox on the Purchase invoices page, where Process runs the same recognition as an upload. The mailbox is checked when an admin opens Purchase invoices (at most every 2 minutes), with Check mailbox now, and every morning at 06:00 UTC. Emails are only read, never moved, deleted or marked as read; the app remembers which emails it has imported, so each PDF comes in once. Attachments over 3 MB, and files that aren't real PDFs, are skipped.</p>
 
       <h3>VAT codes</h3>
       <p>Every invoice line carries a VAT code (VAT20 = 20%, VAT0 = 0%; more can be added in Setup). Each code books its VAT to its own GL accounts: input VAT on purchases (1210 for VAT20, 1220 for VAT0) and output VAT on sales (2210 / 2220). The general VAT accounts 1200 and 2200 remain for VAT that isn't from an invoice, such as payments to or refunds from HMRC. VAT booked by invoices before VAT codes existed was moved to the VAT20 accounts.</p>

@@ -492,3 +492,6 @@ td.nowrap { white-space: nowrap; }
 .lines-table .l-vat-code { min-width: 96px; }
 .lines-table .l-desc { min-width: 150px; }
 .lines-table .l-account { min-width: 150px; }
+
+.inbox-panel { margin-bottom: 16px; border-left: 4px solid var(--light-blue); }
+.inbox-address { font-size: 13px; font-weight: 500; }

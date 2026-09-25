@@ -10,6 +10,7 @@ const bank = require('./bank');
 const assets = require('./assets');
 const auth = require('./auth');
 const recognition = require('./recognition');
+const mailbox = require('./mailbox');
 const vat = require('./vat');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
@@ -97,7 +98,7 @@ const adminOnly = (req) => {
 };
 
 // Requests anyone may make without logging in, and the only changes a viewer may make.
-const PUBLIC = new Set(['POST /api/login', 'POST /api/logout']);
+const PUBLIC = new Set(['POST /api/login', 'POST /api/logout', 'GET /api/cron/mailbox']);
 const VIEWER_MAY_POST = new Set(['POST /api/logout', 'POST /api/me/password']);
 
 const routes = [
@@ -209,6 +210,21 @@ const routes = [
       const learning = body.document_id ? await recognition.learnFromInvoice(body.document_id, invoice, body) : null;
       return { ...invoice, learning };
     }),
+  },
+
+  // Email inbox (supplier invoices sent to the invoice mailbox)
+  { method: 'GET', pattern: /^\/api\/inbox$/, handler: async () => mailbox.listInbox() },
+  { method: 'POST', pattern: /^\/api\/inbox\/check$/, handler: json((body) => (body.if_due ? mailbox.checkIfDue(2) : mailbox.checkMailbox())) },
+  { method: 'POST', pattern: /^\/api\/inbox\/(\d+)\/dismiss$/, handler: async (req, m) => mailbox.dismiss(m[1]) },
+  {
+    // Called by Vercel Cron (see vercel.json) with the CRON_SECRET; no user session.
+    method: 'GET',
+    pattern: /^\/api\/cron\/mailbox$/,
+    handler: async (req) => {
+      const secret = process.env.CRON_SECRET;
+      if (!secret || req.headers.authorization !== `Bearer ${secret}`) throw acct.httpError(401, 'Not allowed');
+      return mailbox.checkMailbox();
+    },
   },
 
   // Invoice recognition (uploaded PDFs)
