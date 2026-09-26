@@ -2592,6 +2592,88 @@ reclassForm.addEventListener('submit', async (e) => {
   }
 });
 
+// ---------- Sortable lists ----------
+// Click a column heading to sort the list by it; click again to reverse.
+// Amounts and numbers sort by value, dates by date, everything else
+// alphabetically; empty cells go last and total rows stay where they are.
+// The chosen order is kept when the list is reloaded.
+
+const SORTABLE = 'table.table:not(.fin):not(.lines-table)';
+const tableSort = new WeakMap(); // table -> { col, dir }
+
+function sortKey(cell) {
+  const text = cell ? cell.innerText.replace(/\s+/g, ' ').trim() : '';
+  if (!text || text === '-') return null;
+  if (/^\d{4}-\d{2}(-\d{2})?/.test(text)) return { s: text };
+  // Amounts like "£1,234.56", "-12.5", "20%", "5.66×", "46 days".
+  const num = text.replace(/^[£€$]|[£€$,%×]|\s*(days?|yrs?|UTC)$/gi, '').replace(/\s/g, '');
+  if (/^[-+]?\d+(\.\d+)?$/.test(num)) return { n: parseFloat(num) };
+  return { s: text.toLowerCase() };
+}
+
+function compareKeys(a, b) {
+  if (a === null || b === null) return a === b ? 0 : a === null ? 1 : -1;
+  if ('n' in a && 'n' in b) return a.n - b.n;
+  const sa = 'n' in a ? String(a.n) : a.s;
+  const sb = 'n' in b ? String(b.n) : b.s;
+  return sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function applySort(table) {
+  const st = tableSort.get(table);
+  const head = table.tHead && table.tHead.rows[0];
+  if (head) {
+    [...head.cells].forEach((th, i) => {
+      th.classList.toggle('sorted-asc', Boolean(st) && st.col === i && st.dir === 1);
+      th.classList.toggle('sorted-desc', Boolean(st) && st.col === i && st.dir === -1);
+    });
+  }
+  const tbody = table.tBodies[0];
+  if (!st || !tbody) return;
+  const rows = [...tbody.rows];
+  // Leave placeholder rows ("nothing yet") alone; keep total rows at the top/bottom.
+  if (rows.length < 2 || rows.some((r) => r.cells.length === 1 && r.cells[0].colSpan > 1 && !r.classList.contains('total'))) return;
+  let start = 0;
+  while (start < rows.length && rows[start].classList.contains('total')) start++;
+  let end = rows.length;
+  while (end > start && rows[end - 1].classList.contains('total')) end--;
+  const middle = rows.slice(start, end).map((r, i) => ({ r, i, k: sortKey(r.cells[st.col]) }));
+  middle.sort((a, b) => {
+    // Empty cells last in both directions.
+    if (a.k === null || b.k === null) return a.k === b.k ? a.i - b.i : a.k === null ? 1 : -1;
+    return st.dir * compareKeys(a.k, b.k) || a.i - b.i;
+  });
+  const frag = document.createDocumentFragment();
+  for (const x of middle) frag.appendChild(x.r);
+  tbody.insertBefore(frag, rows[end] || null);
+}
+
+// Keep the order when a list is re-rendered (e.g. after saving or switching entity).
+const sortObserver = new MutationObserver((records) => {
+  const tables = new Set(records.map((r) => r.target.closest && r.target.closest(SORTABLE)).filter((t) => t && tableSort.has(t)));
+  if (!tables.size) return;
+  sortObserver.disconnect();
+  tables.forEach(applySort);
+  observeTables();
+});
+function observeTables() {
+  sortObserver.observe(document.getElementById('app'), { childList: true, subtree: true });
+}
+observeTables();
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('th');
+  if (!th || !th.closest('thead') || e.target.closest('a, button, input, select')) return;
+  const table = th.closest(SORTABLE);
+  if (!table || !th.textContent.trim()) return;
+  const cur = tableSort.get(table);
+  const col = th.cellIndex;
+  tableSort.set(table, { col, dir: cur && cur.col === col ? -cur.dir : 1 });
+  sortObserver.disconnect();
+  applySort(table);
+  observeTables();
+});
+
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));

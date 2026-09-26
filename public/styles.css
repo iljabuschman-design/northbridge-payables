@@ -495,3 +495,10 @@ td.nowrap { white-space: nowrap; }
 
 .inbox-panel { margin-bottom: 16px; border-left: 4px solid var(--light-blue); }
 .inbox-address { font-size: 13px; font-weight: 500; }
+
+/* Sortable lists: click a heading to sort, again to reverse */
+table.table:not(.fin):not(.lines-table) thead th { cursor: pointer; user-select: none; }
+table.table:not(.fin):not(.lines-table) thead th:empty { cursor: default; }
+table.table:not(.fin):not(.lines-table) thead th:not(:empty):hover { color: var(--brand); }
+table.table thead th.sorted-asc::after { content: ' B2'; font-size: 9px; color: var(--brand); }
+table.table thead th.sorted-desc::after { content: ' BC'; font-size: 9px; color: var(--brand); }
