@@ -1183,7 +1183,7 @@ async function loadLedger() {
         <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
         <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td>
-        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="journal" data-id="${e.journal_id}">Delete</button></td></tr>`
+        <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
     )
     .join('');
   bindJournalRows(document.getElementById('ledger-table'));
@@ -1468,7 +1468,7 @@ async function loadSetup() {
       <td>${a.statement === 'BS' ? 'Balance sheet' : 'P&amp;L'}</td>
       <td class="muted">${esc(ROLE_LABEL[a.role] || (a.bank_currency ? 'Bank' : ''))}</td>
       <td class="num">${fmt(a.balance)}</td>
-      <td class="nowrap"><button class="btn btn-small edit-account">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="account" data-id="${esc(a.code)}">Delete</button></td>
+      <td class="nowrap"><button class="btn btn-small edit-account">Edit</button></td>
     </tr>`
   ).join('');
   tbody.querySelectorAll('tr').forEach((tr) => {
@@ -1485,7 +1485,7 @@ async function loadSetup() {
 
   document.querySelector('#customers-table tbody').innerHTML = CUSTOMERS.map(
     (p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
-      <td class="nowrap"><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="customer" data-id="${p.id}">Delete</button></td></tr>`
+      <td class="nowrap"><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button></td></tr>`
   ).join('');
   document.querySelectorAll('[data-edit-party]').forEach((btn) =>
     btn.addEventListener('click', () => {
@@ -3172,7 +3172,7 @@ async function loadSuppliersPage() {
       <td class="num">${s.open ? `<span class="badge open">${s.open}</span>` : '0'}</td>
       <td class="num">${fmt(s.outstanding, BASE)}</td>
       <td class="muted">${l ? `${l.documents} invoice(s)${l.accuracy !== null ? `, ${Math.round(l.accuracy * 100)}% right` : ''}` : '-'}</td>
-      <td class="nowrap"><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button> <button type="button" class="btn btn-small btn-delete" data-delete="supplier" data-id="${p.id}">Delete</button></td>
+      <td class="nowrap"><button class="btn btn-small" data-edit-party="supplier" data-id="${p.id}">Edit</button></td>
     </tr>`;
   }).join('');
   document.querySelectorAll('#suppliers-table [data-edit-party]').forEach((btn) =>
