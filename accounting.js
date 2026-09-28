@@ -46,6 +46,7 @@ const ROLES = {
   INVENTORY_COST: 'inventory_cost',
   INVENTORY_ACCUM: 'inventory_accumulated_depreciation',
   INVENTORY_DEPR: 'inventory_depreciation',
+  REIMBURSEMENTS: 'employee_expenses_payable',
 };
 
 function httpError(status, message) {
@@ -1091,6 +1092,24 @@ async function deleteJournal(id, by) {
   if (j.period_status === 'closed') throw httpError(400, `Period ${j.period} is closed - reopen it in Setup to delete this journal`);
   if (j.source_type === 'invoice') return deleteInvoice(j.source_id, by);
   if (j.source_type === 'payment') return deletePayment(j.source_id, by);
+  if (j.source_type === 'reimbursement' || j.source_type === 'reimbursement_payment') {
+    // Deleting a claim's booking sets the claim back one step (paid -> approved, approved -> submitted).
+    const claim = await db.get('SELECT * FROM reimbursements WHERE id = ?', j.source_id);
+    if (claim && j.source_type === 'reimbursement' && claim.payment_journal_id) {
+      throw httpError(400, 'This expense claim has been paid - delete the reimbursement payment journal first');
+    }
+    return transaction(async () => {
+      if (claim && j.source_type === 'reimbursement') {
+        await db.run("UPDATE reimbursements SET status = 'submitted', journal_id = NULL, approved_by = NULL, approved_at = NULL WHERE id = ?", claim.id);
+      } else if (claim) {
+        await db.run("UPDATE reimbursements SET status = 'approved', payment_journal_id = NULL, bank_account = NULL, paid_at = NULL WHERE id = ?", claim.id);
+      }
+      await removeJournal(j.id);
+      const summary = `Journal ${j.reference || j.id} (${j.description}) - the expense claim is ${j.source_type === 'reimbursement' ? 'submitted' : 'approved'} again`;
+      await logDeletion('journal', j.reference, summary, j, by);
+      return { deleted: summary };
+    });
+  }
   if (j.source_type === 'depreciation') {
     throw httpError(400, 'Depreciation is booked automatically every month from the asset register, so it would simply be booked again - it cannot be deleted');
   }

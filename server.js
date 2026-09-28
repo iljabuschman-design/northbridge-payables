@@ -10,6 +10,7 @@ const bank = require('./bank');
 const assets = require('./assets');
 const auth = require('./auth');
 const recognition = require('./recognition');
+const reimb = require('./reimbursements');
 const mailbox = require('./mailbox');
 const vat = require('./vat');
 const { seedIfEmpty } = require('./seed');
@@ -20,6 +21,7 @@ const { init, db } = require('./db');
 const ready = init()
   .then(seedIfEmpty)
   .then(acct.setUpVatCodes)
+  .then(reimb.setUpReimbursements)
   .then(auth.ensureDefaultUsers)
   .then(() => {
     fx.startScheduler();
@@ -226,6 +228,15 @@ const routes = [
       return mailbox.checkMailbox();
     },
   },
+
+  // Reimbursements (expense claims from scanned receipts)
+  { method: 'GET', pattern: /^\/api\/reimbursements$/, handler: async (req, m, q) => reimb.listClaims(q.get('entity')) },
+  { method: 'POST', pattern: /^\/api\/reimbursements\/scan$/, handler: json((body, m, q, req) => reimb.scanReceipt(body, req.user)) },
+  { method: 'POST', pattern: /^\/api\/reimbursements$/, handler: json((body, m, q, req) => reimb.createClaim(body, req.user)) },
+  { method: 'POST', pattern: /^\/api\/reimbursements\/(\d+)\/approve$/, handler: async (req, m) => reimb.approveClaim(m[1], req.user) },
+  { method: 'POST', pattern: /^\/api\/reimbursements\/(\d+)\/pay$/, handler: json((body, m, q, req) => reimb.payClaim(m[1], body, req.user)) },
+  { method: 'POST', pattern: /^\/api\/reimbursements\/(\d+)\/reject$/, handler: async (req, m) => reimb.rejectClaim(m[1]) },
+  { method: 'DELETE', pattern: /^\/api\/reimbursements\/(\d+)$/, handler: async (req, m) => reimb.deleteClaim(m[1]) },
 
   // Invoice recognition (uploaded PDFs)
   { method: 'POST', pattern: /^\/api\/recognition\/extract$/, handler: json((body, m, q, req) => recognition.recognise(body, req.user)) },

@@ -41,6 +41,7 @@
       <button class="tab" data-tab="vat">VAT</button>
       <button class="tab" data-tab="ledger">Ledgers</button>
       <button class="tab" data-tab="purchases">Purchase invoices</button>
+      <button class="tab" data-tab="reimbursements">Reimbursements</button>
       <button class="tab" data-tab="assets">Fixed assets</button>
       <div class="tab-more" id="tab-more">
         <button class="tab tab-other" id="tab-other" type="button" aria-haspopup="true" aria-expanded="false">Other ▾</button>
@@ -178,6 +179,66 @@
       </div>
     </div>
     <div class="table-wrap"><table class="table invoices-table" id="purchases-table"></table></div>
+  </section>
+
+  <!-- Reimbursements (expense claims from scanned receipts) -->
+  <section id="view-reimbursements" class="view" hidden>
+    <div class="panel-header wrap">
+      <h2>Reimbursements</h2>
+      <div class="header-actions scan-actions admin-only">
+        <button class="btn btn-primary" id="btn-scan-receipt" title="Take a photo of a receipt: the app reads it and fills in the claim">📷 Scan receipt</button>
+        <button class="btn" id="btn-choose-receipt" title="Choose a photo or PDF of a receipt">🖼 Choose file</button>
+        <button class="btn" id="btn-claim-manual">+ Without receipt</button>
+        <input type="file" id="receipt-camera" accept="image/*" capture="environment" hidden />
+        <input type="file" id="receipt-file" accept="image/*,application/pdf,.pdf" hidden />
+      </div>
+    </div>
+
+    <div class="panel claim-panel" id="claim-panel" hidden>
+      <div class="claim-layout">
+        <div class="receipt-preview" id="receipt-preview">
+          <img id="receipt-image" alt="Receipt" hidden />
+          <div class="receipt-progress" id="receipt-progress" hidden><div class="bar"><span></span></div><p></p></div>
+        </div>
+        <form id="form-claim" class="form claim-form">
+          <h2 id="claim-title">New expense claim</h2>
+          <p class="hint" id="claim-hint"></p>
+          <div class="row">
+            <label>Entity <select name="entity_id" required class="entity-field"></select></label>
+            <label>Paid by (claimant) <input name="claimant" required maxlength="80" autocomplete="name" /></label>
+          </div>
+          <div class="row">
+            <label>Merchant <span class="src-tag" data-src="merchant"></span><input name="merchant" required maxlength="100" /></label>
+            <label>Receipt date <span class="src-tag" data-src="receipt_date"></span><input name="receipt_date" type="date" required /></label>
+          </div>
+          <label>What was it for? <span class="src-tag" data-src="description"></span><input name="description" maxlength="200" placeholder="e.g. Lunch with customer, taxi to airport" /></label>
+          <div class="row">
+            <label>Currency <span class="src-tag" data-src="currency"></span><select name="currency" class="currency-select"></select></label>
+            <label>Rate (1 unit = ? GBP) <input name="exchange_rate" type="number" min="0" step="any" value="1" inputmode="decimal" /></label>
+          </div>
+          <p class="hint" id="claim-rate-hint"></p>
+          <div class="row">
+            <label>Total incl. VAT <span class="src-tag" data-src="total"></span><input name="total_amount" type="number" min="0.01" step="0.01" required inputmode="decimal" /></label>
+            <label>VAT code <span class="src-tag" data-src="vat_code"></span><select name="vat_code"></select></label>
+            <label>VAT amount <span class="src-tag" data-src="vat"></span><input name="vat_amount" type="number" min="0" step="0.01" value="0" inputmode="decimal" /></label>
+          </div>
+          <div class="row">
+            <label>Expense account <span class="src-tag" data-src="account_code"></span><select name="account_code" required></select></label>
+            <label>Cost centre <span class="src-tag" data-src="cost_center"></span><select name="cost_center"></select></label>
+          </div>
+          <label>Notes <input name="notes" maxlength="300" /></label>
+          <p class="hint totals" id="claim-total-hint"></p>
+          <p class="error" id="claim-error"></p>
+          <div class="dialog-actions">
+            <button type="button" class="btn" id="btn-claim-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Submit claim</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="cards claim-cards" id="claim-cards"></div>
+    <div class="table-wrap"><table class="table claims-table" id="claims-table"></table></div>
   </section>
 
   <!-- Bank statements -->
@@ -581,6 +642,9 @@
       <p>For each supplier you can also <strong>mark where a field is</strong>: with the PDF shown next to the form, click a field (invoice number, dates, description, net amount or total) and drag a box around its value on the PDF. The app reads the text in the box and fills the field; when the invoice is saved, the position is stored for that supplier and next time that spot is read first, before any label rules. Positions are kept as fractions of the page, so they work whatever size the PDF is shown at, but they assume that supplier's layout stays the same.</p>
       <p>Supplier invoices can be uploaded as PDF (Purchase invoices → Upload invoice PDF, or drop the file on the page). The browser reads the PDF's text with pdf.js; the server then recognises the supplier (by VAT number, IBAN, bank account, name or learned letterhead), invoice number, invoice and due date, currency, net, VAT and total, and suggests a VAT code from the rate. It uses built-in labels in English, German, French and Dutch. When the invoice is saved, the app compares what was saved with what it suggested and learns per supplier: the labels that supplier uses, its date format, its currency, its letterhead and how its invoices are booked. The PDF is kept with the invoice. Scanned PDFs without a text layer can't be read (that would need OCR or an AI service). Amounts per invoice line aren't split out yet: the net amount goes on one line.</p>
 
+      <h3>Reimbursements</h3>
+      <p>Expenses someone paid personally are claimed on the Reimbursements page, which also works on a phone: Scan receipt opens the camera. The photo is read in the browser (text recognition with Tesseract, loaded the first time it is used; PDF receipts are read with pdf.js) and the app suggests the merchant, date, currency, total, VAT and VAT code. Per merchant it learns the expense account, cost centre, VAT code and description used last time. The photo is shrunk to at most 1600 pixels and stored with the claim. Approve &amp; book posts the claim on the receipt date: expense (net, with cost centre) and input VAT on the VAT code's account, against Employee expenses payable (2400). Pay posts Employee expenses payable against a GBP bank account. Foreign-currency receipts are translated at the rate on the claim and reimbursed in GBP at that amount. Deleting a claim's journal (Journals) sets the claim back one step.</p>
+
       <h3>Email inbox</h3>
       <p>Supplier invoices e-mailed to the invoice mailbox are picked up automatically: the app reads the Gmail inbox (IMAP, with a Google app password - never the normal password) and puts every PDF attachment in the Email inbox on the Purchase invoices page, where Process runs the same recognition as an upload. The mailbox is checked when an admin opens Purchase invoices (at most every 2 minutes), with Check mailbox now, and every morning at 06:00 UTC. Emails are only read, never moved, deleted or marked as read; the app remembers which emails it has imported, so each PDF comes in once. Attachments over 3 MB, and files that aren't real PDFs, are skipped.</p>
 
@@ -832,6 +896,21 @@
 </dialog>
 
 <!-- Pay a purchase invoice through the (simulated) bank: steps rendered by app.js -->
+<!-- Pay an approved expense claim -->
+<dialog id="dialog-claim-pay">
+  <form id="form-claim-pay" class="form">
+    <h2>Pay expense claim</h2>
+    <p class="hint" id="claim-pay-info"></p>
+    <label>Pay from <select name="bank_account" required></select></label>
+    <label>Payment date <input name="payment_date" type="date" required /></label>
+    <p class="error" id="claim-pay-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Mark as paid</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dialog-pay" class="wide pay-dialog">
   <div id="pay-body"></div>
 </dialog>

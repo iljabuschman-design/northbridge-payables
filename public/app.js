@@ -15,8 +15,9 @@ const ROLE_LABEL = {
   vat_payable: 'Output VAT',
   fx_gain: 'FX gains',
   fx_loss: 'FX losses',
+  employee_expenses_payable: 'Expense claims owed',
 };
-const SOURCE_LABEL = { manual: 'Manual', invoice: 'Invoice', payment: 'Payment', bank: 'Bank', opening: 'Opening', asset: 'Asset', depreciation: 'Depreciation' };
+const SOURCE_LABEL = { manual: 'Manual', invoice: 'Invoice', payment: 'Payment', bank: 'Bank', opening: 'Opening', asset: 'Asset', depreciation: 'Depreciation', reimbursement: 'Expense claim', reimbursement_payment: 'Claim payment' };
 let COST_CENTERS = [];
 let VAT_CODES = [];
 let PERIODS = [];
@@ -233,6 +234,10 @@ const LOADERS = {
   purchases: async () => {
     await loadInvoices('purchase');
     loadInbox('if_due').catch((err) => console.error(err));
+  },
+  reimbursements: async () => {
+    await Promise.all([loadVatCodes(), loadCostCenters(), loadAccounts()]);
+    await loadReimbursements();
   },
   bank: loadBank,
   journals: loadJournals,
@@ -503,6 +508,7 @@ const DELETE_URL = {
   supplier: (id) => `/api/suppliers/${id}`,
   customer: (id) => `/api/customers/${id}`,
   account: (code) => `/api/accounts/${encodeURIComponent(code)}`,
+  claim: (id) => `/api/reimbursements/${id}`,
 };
 document.addEventListener(
   'click',
@@ -2677,6 +2683,411 @@ document.addEventListener('click', (e) => {
 // ---------- Dialog wiring & init ----------
 
 document.querySelectorAll('dialog [data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
+
+// ---------- Reimbursements (scan a receipt, claim it back) ----------
+// Works on a phone: "Scan receipt" opens the camera. Photos are read in the
+// browser with Tesseract (OCR, loaded on first use), PDFs with pdf.js; the
+// server suggests the claim and learns per merchant how it was booked.
+
+const TESSERACT_JS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const CLAIM_STATUS = { submitted: ['To approve', 'open'], approved: ['Approved - to pay', 'partial'], paid: ['Paid', 'paid'], rejected: ['Rejected', 'rejected'] };
+const SRC_TEXT = { learned: 'learned', generic: 'read', calculated: 'calculated', guess: 'check' };
+const claimForm = document.getElementById('form-claim');
+let claimDoc = null; // document id of the scanned receipt
+let vatTyped = false; // the VAT amount was read from the receipt or typed, so don't recalculate it
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('The text reader could not be loaded - check your internet connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+let ocrWorker = null;
+let ocrProgress = () => {};
+async function ocr(canvas, onProgress) {
+  ocrProgress = onProgress;
+  if (!ocrWorker) {
+    onProgress('Loading the text reader…', 0.05);
+    if (!window.Tesseract) await loadScript(TESSERACT_JS);
+    ocrWorker = await window.Tesseract.createWorker('eng', 1, {
+      logger: (m) => {
+        if (m.status === 'recognizing text') ocrProgress('Reading the receipt…', 0.3 + 0.7 * m.progress);
+        else if (/load/.test(m.status)) ocrProgress('Loading the text reader…', 0.05 + 0.25 * (m.progress || 0));
+      },
+    });
+  }
+  const { data } = await ocrWorker.recognize(forOcr(canvas));
+  return data.text.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** A copy of a canvas drawn at another size (white behind transparent parts). */
+function resized(src, longSide) {
+  const scale = longSide / Math.max(src.width, src.height);
+  const c = document.createElement('canvas');
+  c.width = Math.round(src.width * scale);
+  c.height = Math.round(src.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+/**
+ * Receipts are small, faint print: OCR reads them far better at about 2400px,
+ * in grey with the contrast stretched (darkest 2% to black, lightest 2% to white).
+ */
+function forOcr(src) {
+  const c = resized(src, Math.min(2400, Math.max(src.width, src.height) * 3));
+  const ctx = c.getContext('2d');
+  const im = ctx.getImageData(0, 0, c.width, c.height);
+  const d = im.data;
+  const n = d.length / 4;
+  const grey = new Uint8ClampedArray(n);
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < n; i++) {
+    grey[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    hist[grey[i]]++;
+  }
+  let lo = 0;
+  let hi = 255;
+  for (let v = 0, acc = 0; v < 256; v++) {
+    acc += hist[v];
+    if (acc <= n * 0.02) lo = v;
+    if (acc < n * 0.98) hi = v + 1;
+  }
+  const span = Math.max(1, hi - lo);
+  for (let i = 0; i < n; i++) d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = ((grey[i] - lo) * 255) / span;
+  ctx.putImageData(im, 0, 0);
+  return c;
+}
+
+/** A photo as a canvas of at most 2400px (phone cameras take far bigger photos than a phone browser can draw). */
+async function imageToCanvas(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode().catch(() => {
+      throw new Error('This photo format cannot be read - please use a JPEG or PNG.');
+    });
+    const scale = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function pdfPageToCanvas(doc) {
+  const page = await doc.getPage(1);
+  const vp1 = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: Math.min(3, 1600 / Math.max(vp1.width, vp1.height)) });
+  const canvas = document.createElement('canvas');
+  canvas.width = vp.width;
+  canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  return canvas;
+}
+
+const canvasToJpeg = (canvas) => canvas.toDataURL('image/jpeg', 0.85);
+
+function setProgress(text, fraction) {
+  const box = document.getElementById('receipt-progress');
+  box.hidden = text === null;
+  if (text === null) return;
+  box.querySelector('p').textContent = text;
+  box.querySelector('.bar span').style.width = `${Math.round((fraction || 0) * 100)}%`;
+}
+
+function showSrc(field, source) {
+  const tag = claimForm.querySelector(`[data-src="${field}"]`);
+  if (!tag) return;
+  tag.textContent = source ? SRC_TEXT[source] || source : '';
+  tag.className = `src-tag ${source ? `src-${source}` : ''}`;
+}
+
+function openClaimForm(title, hint) {
+  claimForm.reset();
+  claimDoc = null;
+  vatTyped = false;
+  document.getElementById('claim-title').textContent = title;
+  document.getElementById('claim-hint').textContent = hint || '';
+  document.getElementById('claim-error').textContent = '';
+  claimForm.querySelectorAll('[data-src]').forEach((t) => showSrc(t.dataset.src, null));
+  fillEntityField(claimForm.entity_id);
+  let claimant = CURRENT_USER.name;
+  try {
+    claimant = localStorage.getItem('nb_claimant') || claimant;
+  } catch {}
+  claimForm.claimant.value = claimant;
+  claimForm.currency.innerHTML = currencyOptions(BASE);
+  claimForm.vat_code.innerHTML = '<option value="">- no VAT -</option>' + vatCodeOptions(defaultVatCode(BASE));
+  claimForm.account_code.innerHTML = '<option value="">Choose…</option>' + accountOptions((a) => a.statement === 'PL' && a.side === 'expense');
+  claimForm.cost_center.innerHTML = ccOptions('');
+  claimForm.receipt_date.value = today();
+  claimForm.exchange_rate.value = 1;
+  claimForm.exchange_rate.readOnly = true;
+  document.getElementById('claim-rate-hint').textContent = '';
+  document.getElementById('receipt-image').hidden = true;
+  document.getElementById('receipt-preview').hidden = true;
+  setProgress(null);
+  const panel = document.getElementById('claim-panel');
+  panel.hidden = false;
+  recalcClaimVat();
+  updateClaimTotals();
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeClaimForm() {
+  document.getElementById('claim-panel').hidden = true;
+  claimDoc = null;
+}
+
+function recalcClaimVat() {
+  if (vatTyped) return;
+  const opt = claimForm.vat_code.selectedOptions[0];
+  const rate = opt && opt.dataset.rate ? Number(opt.dataset.rate) : 0;
+  const total = Number(claimForm.total_amount.value) || 0;
+  claimForm.vat_amount.value = rate ? round2((total * rate) / (100 + rate)).toFixed(2) : '0';
+}
+
+function updateClaimTotals() {
+  const ccy = claimForm.currency.value;
+  const total = Number(claimForm.total_amount.value) || 0;
+  const vat = Number(claimForm.vat_amount.value) || 0;
+  const rate = ccy === BASE ? 1 : Number(claimForm.exchange_rate.value) || 0;
+  document.getElementById('claim-total-hint').textContent = total
+    ? `Net ${fmt(total - vat, ccy)} + VAT ${fmt(vat, ccy)} = ${fmt(total, ccy)}` + (ccy === BASE ? '' : ` → reimbursed ${fmt(round2(total * rate), BASE)}`)
+    : '';
+}
+
+claimForm.total_amount.addEventListener('input', () => {
+  recalcClaimVat();
+  updateClaimTotals();
+});
+claimForm.vat_code.addEventListener('change', () => {
+  vatTyped = false;
+  recalcClaimVat();
+  updateClaimTotals();
+});
+claimForm.vat_amount.addEventListener('input', () => {
+  vatTyped = true;
+  updateClaimTotals();
+});
+claimForm.exchange_rate.addEventListener('input', updateClaimTotals);
+const claimRate = () => autoRate(claimForm.currency.value, claimForm.receipt_date.value, claimForm.exchange_rate, document.getElementById('claim-rate-hint')).then(updateClaimTotals);
+claimForm.currency.addEventListener('change', claimRate);
+claimForm.receipt_date.addEventListener('change', () => claimForm.currency.value !== BASE && claimRate());
+claimForm.account_code.addEventListener('change', () => syncCcSelect(claimForm.account_code, claimForm.cost_center));
+
+function applyReceiptSuggestion(s) {
+  const set = (field, key, value) => {
+    if (value === undefined || value === null || value === '') return;
+    const el = claimForm[field];
+    if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === String(value))) return;
+    el.value = value;
+    showSrc(key, s[key].source);
+  };
+  if (s.merchant) set('merchant', 'merchant', s.merchant.value);
+  if (s.receipt_date) set('receipt_date', 'receipt_date', s.receipt_date.value);
+  if (s.description) set('description', 'description', s.description.value);
+  if (s.currency) set('currency', 'currency', s.currency.value);
+  if (s.total) set('total_amount', 'total', s.total.value.toFixed(2));
+  if (s.account_code) set('account_code', 'account_code', s.account_code.value);
+  syncCcSelect(claimForm.account_code, claimForm.cost_center);
+  if (s.cost_center && !claimForm.cost_center.disabled) set('cost_center', 'cost_center', s.cost_center.value);
+  if (s.vat_code) set('vat_code', 'vat_code', s.vat_code.value);
+  else if (!s.vat) claimForm.vat_code.value = '';
+  if (s.vat) {
+    claimForm.vat_amount.value = s.vat.value.toFixed(2);
+    showSrc('vat', s.vat.source);
+    vatTyped = true;
+  } else recalcClaimVat();
+  if (claimForm.currency.value !== BASE) claimRate();
+  updateClaimTotals();
+}
+
+async function scanReceiptFile(file) {
+  if (!file) return;
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  if (!isPdf && !/^image\//.test(file.type)) return showNotice('Please choose a photo or a PDF of the receipt.', 'bad');
+  if (file.size > 15 * 1024 * 1024) return showNotice('The file is larger than 15 MB.', 'bad');
+  openClaimForm('New expense claim', 'Check what was read from the receipt (fields marked "check" were guessed), then submit.');
+  const img = document.getElementById('receipt-image');
+  document.getElementById('receipt-preview').hidden = false;
+  setProgress('Opening the receipt…', 0.02);
+  const buttons = document.querySelectorAll('.scan-actions .btn, #form-claim [type=submit]');
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    let lines;
+    let canvas;
+    let upload;
+    if (isPdf) {
+      if (file.size > 3 * 1024 * 1024) throw new Error('The PDF is larger than 3 MB.');
+      const read = await file.arrayBuffer().then(pdfRead);
+      canvas = await pdfPageToCanvas(read.doc);
+      img.src = canvasToJpeg(canvas);
+      img.hidden = false;
+      lines = read.lines;
+      // A scanned PDF has no text layer: read its first page like a photo.
+      if (!lines.join('').trim()) lines = await ocr(canvas, setProgress);
+      upload = { content_type: 'application/pdf', file_base64: await fileToBase64(file), filename: file.name };
+    } else {
+      canvas = await imageToCanvas(file);
+      // The stored copy: at most 1600px, which keeps uploads small.
+      img.src = canvasToJpeg(Math.max(canvas.width, canvas.height) > 1600 ? resized(canvas, 1600) : canvas);
+      img.hidden = false;
+      lines = await ocr(canvas, setProgress);
+      upload = { content_type: 'image/jpeg', file_base64: img.src.split(',')[1], filename: `${(file.name || 'receipt').replace(/\.[^.]+$/, '')}.jpg` };
+    }
+    setProgress('Recognising…', 1);
+    const s = await post('/api/reimbursements/scan', { ...upload, lines, entity_id: claimForm.entity_id.value });
+    claimDoc = s.document_id;
+    applyReceiptSuggestion(s);
+    const hint = document.getElementById('claim-hint');
+    if (s.no_text) hint.textContent = 'No text could be read from this receipt - please fill in the claim yourself.';
+    else if (s.uses) hint.textContent = `Known merchant: booked as last time (${s.uses} earlier claim${s.uses === 1 ? '' : 's'}). Check the amounts, then submit.`;
+    setProgress(null);
+  } catch (err) {
+    setProgress(null);
+    document.getElementById('claim-error').textContent = `${err.message} You can still fill in the claim yourself.`;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+document.getElementById('btn-scan-receipt').addEventListener('click', () => document.getElementById('receipt-camera').click());
+document.getElementById('btn-choose-receipt').addEventListener('click', () => document.getElementById('receipt-file').click());
+['receipt-camera', 'receipt-file'].forEach((id) =>
+  document.getElementById(id).addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    scanReceiptFile(file);
+  })
+);
+document.getElementById('btn-claim-manual').addEventListener('click', () => openClaimForm('New expense claim (no receipt)', 'Enter the expense by hand.'));
+document.getElementById('btn-claim-cancel').addEventListener('click', closeClaimForm);
+
+claimForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = claimForm;
+  const btn = f.querySelector('[type=submit]');
+  btn.disabled = true;
+  document.getElementById('claim-error').textContent = '';
+  try {
+    const c = await post('/api/reimbursements', {
+      entity_id: Number(f.entity_id.value),
+      claimant: f.claimant.value,
+      merchant: f.merchant.value,
+      receipt_date: f.receipt_date.value,
+      description: f.description.value,
+      currency: f.currency.value,
+      exchange_rate: parseFloat(f.exchange_rate.value),
+      total_amount: parseFloat(f.total_amount.value),
+      vat_code: f.vat_code.value || null,
+      vat_amount: parseFloat(f.vat_amount.value) || 0,
+      account_code: f.account_code.value,
+      cost_center: f.cost_center.value || null,
+      notes: f.notes.value,
+      document_id: claimDoc,
+    });
+    try {
+      localStorage.setItem('nb_claimant', f.claimant.value);
+    } catch {}
+    closeClaimForm();
+    showNotice(`Claim of ${c.claimant} for ${fmt(c.total_amount, c.currency)} (${c.merchant}) submitted. Next time ${c.merchant} is booked the same way.`);
+    loadReimbursements();
+  } catch (err) {
+    document.getElementById('claim-error').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadReimbursements() {
+  const claims = await api('/api/reimbursements');
+  const of = (st) => claims.filter((c) => c.status === st);
+  const card = (label, list, sub) =>
+    `<div class="card"><div class="label">${label}</div><div class="value">${fmt(list.reduce((s, c) => s + c.base_total, 0), BASE)}</div><div class="sub">${list.length} claim${list.length === 1 ? '' : 's'}${sub ? ` · ${sub}` : ''}</div></div>`;
+  document.getElementById('claim-cards').innerHTML = card('To approve', of('submitted')) + card('Approved - to pay', of('approved'), 'owed to employees') + card('Paid', of('paid')) + card('Rejected', of('rejected'));
+  const rows = claims.map((c) => {
+    const [label, cls] = CLAIM_STATUS[c.status] || [c.status, ''];
+    let actions = '';
+    if (c.status === 'submitted') {
+      actions = `<button type="button" class="btn btn-small btn-primary" data-claim-approve="${c.id}">Approve &amp; book</button> <button type="button" class="btn btn-small" data-claim-reject="${c.id}">Reject</button>`;
+    } else if (c.status === 'approved') {
+      actions = `<button type="button" class="btn btn-small btn-primary" data-claim-pay="${c.id}">Pay</button>`;
+    }
+    if (c.status === 'submitted' || c.status === 'rejected') actions += ` <button type="button" class="btn btn-small btn-delete" data-delete="claim" data-id="${c.id}">Delete</button>`;
+    return `<tr>
+      <td class="nowrap" data-label="Date">${esc(c.receipt_date)}</td>
+      <td data-label="Claimant">${esc(c.claimant)}${CURRENT_ENTITY ? '' : ` <span class="muted">${esc(c.entity_code)}</span>`}</td>
+      <td data-label="Merchant"><strong>${esc(c.merchant)}</strong></td>
+      <td data-label="What for">${esc(c.description || '')}${c.notes ? `<div class="muted small">${esc(c.notes)}</div>` : ''}</td>
+      <td data-label="Account">${acctLink(c.account_code, c.account_name)}${c.cost_center ? ` <span class="muted">· ${esc(c.cost_center)}</span>` : ''}</td>
+      <td class="num" data-label="Amount">${fmt(c.total_amount, c.currency)}${c.vat_amount ? `<div class="muted small">VAT ${fmt(c.vat_amount, c.currency)} ${esc(c.vat_code || '')}</div>` : ''}</td>
+      <td class="num" data-label="GBP">${fmt(c.base_total, BASE)}</td>
+      <td data-label="Status"><span class="badge ${cls}">${label}</span>${c.paid_at ? `<div class="muted small">${esc(c.paid_at)}</div>` : ''}</td>
+      <td data-label="Receipt">${c.document_id ? `<a href="/api/documents/${c.document_id}/file" target="_blank" rel="noopener">🧾 View</a>` : '<span class="muted">none</span>'}</td>
+      <td class="nowrap claim-actions admin-only">${actions.trim()}</td>
+    </tr>`;
+  });
+  document.getElementById('claims-table').innerHTML =
+    '<thead><tr><th>Date</th><th>Claimant</th><th>Merchant</th><th>What for</th><th>Account</th><th class="num">Amount</th><th class="num">GBP</th><th>Status</th><th>Receipt</th><th></th></tr></thead>' +
+    `<tbody>${rows.join('') || '<tr><td colspan="10" class="hint">No expense claims yet. Tap 📷 Scan receipt to add one.</td></tr>'}</tbody>`;
+}
+
+document.getElementById('claims-table').addEventListener('click', async (e) => {
+  const pay = e.target.closest('[data-claim-pay]');
+  if (pay) return openClaimPay(Number(pay.dataset.claimPay));
+  const approve = e.target.closest('[data-claim-approve]');
+  const btn = approve || e.target.closest('[data-claim-reject]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const c = approve
+      ? await post(`/api/reimbursements/${btn.dataset.claimApprove}/approve`, {})
+      : await post(`/api/reimbursements/${btn.dataset.claimReject}/reject`, {});
+    showNotice(approve ? `Claim booked: ${fmt(c.base_total, BASE)} to ${c.account_code} ${c.account_name}, owed to ${c.claimant}.` : `Claim of ${c.claimant} (${c.merchant}) rejected.`);
+    loadReimbursements();
+  } catch (err) {
+    showNotice(err.message, 'bad');
+    btn.disabled = false;
+  }
+});
+
+let payingClaim = null;
+async function openClaimPay(id) {
+  payingClaim = (await api('/api/reimbursements')).find((c) => c.id === id);
+  if (!payingClaim) return;
+  const f = document.getElementById('form-claim-pay');
+  f.bank_account.innerHTML = accountOptions((a) => a.category === 'cash' && a.bank_currency === BASE && forEntity(payingClaim.entity_id)(a));
+  f.payment_date.value = today();
+  document.getElementById('claim-pay-info').textContent = `Reimburse ${payingClaim.claimant} ${fmt(payingClaim.base_total, BASE)} for ${payingClaim.merchant} (${payingClaim.receipt_date}).`;
+  document.getElementById('claim-pay-error').textContent = '';
+  document.getElementById('dialog-claim-pay').showModal();
+}
+document.getElementById('form-claim-pay').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const c = await post(`/api/reimbursements/${payingClaim.id}/pay`, { bank_account: f.bank_account.value, payment_date: f.payment_date.value });
+    document.getElementById('dialog-claim-pay').close();
+    showNotice(`Paid ${fmt(c.base_total, BASE)} to ${c.claimant} from bank ${c.bank_account}.`);
+    loadReimbursements();
+  } catch (err) {
+    document.getElementById('claim-pay-error').textContent = err.message;
+  }
+});
 
 // ---------- Invoice recognition (upload a PDF) ----------
 

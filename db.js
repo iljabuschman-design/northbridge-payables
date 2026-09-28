@@ -177,6 +177,48 @@ CREATE TABLE IF NOT EXISTS vendor_profiles (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Expense claims: receipts someone paid personally, to be reimbursed (see reimbursements.js).
+-- status: submitted -> approved (booked) -> paid, or rejected. base_* amounts are in GBP.
+CREATE TABLE IF NOT EXISTS reimbursements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES entities(id),
+  claimant TEXT NOT NULL,
+  receipt_date TEXT NOT NULL,
+  merchant TEXT NOT NULL,
+  description TEXT,
+  currency TEXT NOT NULL,
+  total_amount REAL NOT NULL,
+  vat_amount REAL NOT NULL DEFAULT 0,
+  vat_code TEXT,
+  account_code TEXT NOT NULL REFERENCES accounts(code),
+  cost_center TEXT,
+  exchange_rate REAL NOT NULL DEFAULT 1,
+  base_total REAL NOT NULL,
+  base_vat REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'submitted',
+  document_id INTEGER REFERENCES documents(id),
+  journal_id INTEGER,
+  payment_journal_id INTEGER,
+  bank_account TEXT,
+  notes TEXT,
+  created_by TEXT,
+  approved_by TEXT,
+  approved_at TEXT,
+  paid_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- How receipts of a merchant were booked last time (account, cost centre, VAT code).
+CREATE TABLE IF NOT EXISTS merchant_profiles (
+  merchant_key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  account_code TEXT,
+  cost_center TEXT,
+  vat_code TEXT,
+  description TEXT,
+  uses INTEGER NOT NULL DEFAULT 0
+);
+
 -- VAT codes: a rate plus the GL accounts its VAT is booked to on purchase and sales invoices.
 CREATE TABLE IF NOT EXISTS vat_codes (
   code TEXT PRIMARY KEY,
@@ -374,7 +416,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'reimbursements', 'merchant_profiles', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();
