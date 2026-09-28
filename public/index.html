@@ -896,6 +896,20 @@
 </dialog>
 
 <!-- Pay a purchase invoice through the (simulated) bank: steps rendered by app.js -->
+<!-- Scan a receipt with the camera -->
+<dialog id="dialog-camera" class="camera-dialog">
+  <div class="camera-view">
+    <video id="camera-video" autoplay playsinline muted></video>
+    <div class="camera-frame"></div>
+    <p class="camera-tip">Lay the receipt flat in good light and fit it inside the frame</p>
+  </div>
+  <div class="camera-actions">
+    <button type="button" class="btn" id="btn-camera-cancel">Cancel</button>
+    <button type="button" class="camera-shutter" id="btn-camera-shoot" aria-label="Take photo" title="Take photo"></button>
+    <button type="button" class="btn" id="btn-camera-native" title="Use the phone's own camera app">Camera app</button>
+  </div>
+</dialog>
+
 <!-- Pay an approved expense claim -->
 <dialog id="dialog-claim-pay">
   <form id="form-claim-pay" class="form">

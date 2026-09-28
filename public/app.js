@@ -2965,7 +2965,67 @@ async function scanReceiptFile(file) {
   }
 }
 
-document.getElementById('btn-scan-receipt').addEventListener('click', () => document.getElementById('receipt-camera').click());
+// ----- Scanning with the camera inside the app -----
+// A live camera view with a frame to line the receipt up in. Where the camera
+// can't be used (no permission, old browser) the phone's camera app opens instead.
+
+const cameraDialog = document.getElementById('dialog-camera');
+const cameraVideo = document.getElementById('camera-video');
+let cameraStream = null;
+
+function stopCamera() {
+  if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+  cameraStream = null;
+  cameraVideo.srcObject = null;
+}
+cameraDialog.addEventListener('close', stopCamera);
+function closeCamera() {
+  cameraDialog.close();
+  stopCamera();
+}
+
+async function openCamera() {
+  const nativeCamera = () => document.getElementById('receipt-camera').click();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return nativeCamera();
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+    });
+  } catch (err) {
+    showNotice(
+      err.name === 'NotAllowedError'
+        ? 'Camera access is blocked for this site, so the phone camera opens instead. To scan inside the app, allow the camera in the browser settings.'
+        : 'The camera could not be started, so the phone camera opens instead.',
+      'bad'
+    );
+    return nativeCamera();
+  }
+  const track = cameraStream.getVideoTracks()[0];
+  track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  cameraVideo.srcObject = cameraStream;
+  cameraDialog.showModal();
+  await cameraVideo.play().catch(() => {});
+}
+
+document.getElementById('btn-camera-shoot').addEventListener('click', () => {
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  if (!w || !h) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+  closeCamera();
+  canvas.toBlob((blob) => scanReceiptFile(new File([blob], `receipt-${today()}.jpg`, { type: 'image/jpeg' })), 'image/jpeg', 0.92);
+});
+document.getElementById('btn-camera-cancel').addEventListener('click', () => closeCamera());
+document.getElementById('btn-camera-native').addEventListener('click', () => {
+  closeCamera();
+  document.getElementById('receipt-camera').click();
+});
+
+document.getElementById('btn-scan-receipt').addEventListener('click', openCamera);
 document.getElementById('btn-choose-receipt').addEventListener('click', () => document.getElementById('receipt-file').click());
 ['receipt-camera', 'receipt-file'].forEach((id) =>
   document.getElementById(id).addEventListener('change', (e) => {

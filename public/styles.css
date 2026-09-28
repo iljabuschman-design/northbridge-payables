@@ -559,3 +559,19 @@ table.table thead th.sorted-desc::after { content: ' BC'; font-size: 9px; color
   table.claims-table td.claim-actions .btn { min-height: 40px; }
 }
 @media (max-width: 700px) { .entity-picker, .user-menu { margin-left: 0; } .user-menu { flex-wrap: wrap; } }
+
+/* Camera scanner (Reimbursements) */
+.camera-dialog { width: min(560px, 96vw); max-width: none; background: #000; overflow: hidden; }
+.camera-view { position: relative; aspect-ratio: 3 / 4; max-height: 75vh; overflow: hidden; background: #000; }
+.camera-view video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camera-frame { position: absolute; inset: 7% 12% 14%; border: 3px solid rgba(255, 255, 255, .9); border-radius: 12px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .35); pointer-events: none; }
+.camera-tip { position: absolute; left: 0; right: 0; bottom: 3%; margin: 0; padding: 0 16px; text-align: center; color: #fff; font-size: 13.5px; text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
+.camera-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); background: #000; }
+.camera-actions .btn { background: rgba(255, 255, 255, .12); color: #fff; border-color: rgba(255, 255, 255, .35); min-width: 96px; min-height: 44px; }
+.camera-shutter { width: 70px; height: 70px; border-radius: 50%; border: 4px solid #fff; background: #fff; box-shadow: inset 0 0 0 3px #000; cursor: pointer; flex-shrink: 0; }
+.camera-shutter:active { transform: scale(.94); }
+@media (max-width: 700px) {
+  .camera-dialog { width: 100vw; height: 100dvh; max-height: none; margin: 0; border-radius: 0; }
+  .camera-dialog[open] { display: flex; flex-direction: column; }
+  .camera-view { flex: 1; aspect-ratio: auto; max-height: none; }
+}
