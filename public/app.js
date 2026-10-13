@@ -246,6 +246,7 @@ const LOADERS = {
   ledger: loadLedger,
   financials: loadFinancials,
   intercompany: loadIntercompany,
+  structure: loadStructure,
   vat: async () => {
     await loadVat();
     await loadVatCodes();
@@ -1607,6 +1608,105 @@ entityForm.addEventListener('submit', async (e) => {
     document.getElementById('entity-error').textContent = err.message;
   }
 });
+
+// ---------- Group overview ----------
+
+/** The card of one company in the ownership chart. */
+function orgCard(e, ownedPct) {
+  return `<button type="button" class="org-card type-${esc(e.entity_type || 'other')}${e.is_consolidation ? ' cons' : ''}" data-open-entity="${e.id}" title="Open the financials of ${esc(e.name)}">
+    <span class="org-code">${esc(e.code)}</span>${ownedPct ? `<span class="org-pct">${ownedPct}%</span>` : ''}
+    <span class="org-name">${esc(e.name)}</span>
+    <span class="org-type">${esc(e.type_name || '')}</span>
+    <span class="org-meta">${esc(e.country || '')}${e.main_currency ? ` · ${esc(e.main_currency)}` : ''}</span>
+    <span class="org-meta">${e.year_end_month ? `Year ${esc(financialYearText(e.year_end_month))}` : ''}${e.framework ? ` · ${esc(e.framework)}` : ''}</span>
+  </button>`;
+}
+
+async function loadStructure() {
+  const [entities, ic] = await Promise.all([api('/api/entities'), api('/api/intercompany?from=2000-01-01&to=2099-12-31')]);
+  META.entities = entities;
+  const byId = Object.fromEntries(entities.map((e) => [e.id, e]));
+  const operating = entities.filter((e) => !e.is_consolidation);
+  const childrenOf = (id) => operating.filter((e) => e.parent_id === id);
+  const subtree = (e) => `<li>${orgCard(e, e.parent_id ? e.ownership_pct : null)}${childrenOf(e.id).length ? `<ul>${childrenOf(e.id).map(subtree).join('')}</ul>` : ''}</li>`;
+
+  const roots = operating.filter((e) => !e.parent_id || !byId[e.parent_id]);
+  const groups = roots.filter((r) => childrenOf(r.id).length || entities.some((c) => c.consolidation_of === r.id));
+  const loners = roots.filter((r) => !groups.includes(r));
+  const chart = [
+    ...groups.map((root) => {
+      const cons = entities.find((c) => c.consolidation_of === root.id);
+      const members = [root, ...operating.filter((e) => e.id !== root.id && cons && cons.members.includes(e.id))];
+      return `<div class="org-group ${cons ? 'consolidated' : ''}">
+        <div class="org-group-title">${
+          cons
+            ? `Consolidated group <button type="button" class="entity-tag org-link" data-open-entity="${cons.id}" title="Open the consolidated financials">${esc(cons.code)}</button> <span class="muted">${members.length} companies</span>`
+            : 'Group'
+        }</div>
+        <ul class="org-tree"><li class="org-root">${orgCard(root, null)}${childrenOf(root.id).length ? `<ul>${childrenOf(root.id).map(subtree).join('')}</ul>` : ''}</li></ul>
+      </div>`;
+    }),
+    loners.length
+      ? `<div class="org-group"><div class="org-group-title">Independent companies <span class="muted">operate on their own</span></div>
+          <ul class="org-flat">${loners.map((e) => `<li>${orgCard(e, null)}</li>`).join('')}</ul></div>`
+      : '',
+  ].join('');
+  document.getElementById('structure-chart').innerHTML = chart;
+  document.querySelectorAll('#structure-chart [data-open-entity]').forEach((el) =>
+    el.addEventListener('click', () => {
+      CURRENT_ENTITY = el.dataset.openEntity;
+      try {
+        localStorage.setItem('nb-entity', CURRENT_ENTITY);
+      } catch {
+        /* optional */
+      }
+      fillEntitySelect();
+      location.hash = '#financials';
+    })
+  );
+
+  // ----- Relations between companies: ownership and intercompany activity -----
+  const ownership = (a, b) => {
+    if (a.parent_id === b.id) return `${a.code} is ${a.ownership_pct}% owned by ${b.code}`;
+    if (b.parent_id === a.id) return `${b.code} is ${b.ownership_pct}% owned by ${a.code}`;
+    // Same holding group, no direct link
+    const rootOf = (e) => {
+      let x = e;
+      while (x.parent_id && byId[x.parent_id]) x = byId[x.parent_id];
+      return x;
+    };
+    return rootOf(a).id === rootOf(b).id ? 'Same group (not directly owned)' : 'No ownership link';
+  };
+  const rows = ic.pairs.map((p) => {
+    const a = byId[p.a_id];
+    const b = byId[p.b_id];
+    const flow = p.pl.filter((g) => g.key === 'operating').reduce((t, g) => t + Math.max(g.income, g.expense), 0);
+    const interest = p.pl.filter((g) => g.key === 'financing').reduce((t, g) => t + Math.max(g.income, g.expense), 0);
+    const loans = p.bs.filter((g) => g.key === 'loans').reduce((t, g) => t + Math.abs(g.a), 0);
+    const trade = p.bs.filter((g) => g.key === 'trade').reduce((t, g) => t + g.a, 0);
+    return { p, a, b, flow, interest, loans, trade, relation: ownership(a, b) };
+  });
+  const linked = rows.filter((r) => /owned by/.test(r.relation)).length;
+  const bad = rows.filter((r) => !r.p.ok).length;
+  document.getElementById('structure-summary').innerHTML = `
+    <div class="card"><div class="label">Companies</div><div class="value">${operating.length}</div><div class="sub">${entities.length - operating.length} consolidated entities</div></div>
+    <div class="card"><div class="label">Groups</div><div class="value">${groups.length}</div><div class="sub">${loners.length} independent compan${loners.length === 1 ? 'y' : 'ies'}</div></div>
+    <div class="card"><div class="label">Intercompany relations</div><div class="value">${rows.length}</div><div class="sub">${linked} also linked by ownership</div></div>
+    <div class="card"><div class="label">Not reconciled</div><div class="value ${bad ? 'neg' : 'pos'}">${bad}</div><div class="sub">relations with differences</div></div>`;
+  document.getElementById('structure-relations-table').innerHTML =
+    `<thead><tr><th>Company A</th><th>Company B</th><th>Ownership</th><th class="num">Charged between them</th><th class="num">Interest</th><th class="num">Loans outstanding</th><th class="num">Trade balance (A)</th><th>Reconciliation</th></tr></thead><tbody>` +
+    (rows
+      .map(
+        (r) => `<tr class="clickable" data-go-ic="1">
+          <td><span class="entity-tag">${esc(r.a.code)}</span> ${esc(r.a.name)}</td><td><span class="entity-tag">${esc(r.b.code)}</span> ${esc(r.b.name)}</td>
+          <td class="${/owned by/.test(r.relation) ? '' : 'muted'}">${esc(r.relation)}</td>
+          <td class="num">${fmt(r.flow, BASE)}</td><td class="num">${r.interest ? fmt(r.interest, BASE) : ''}</td><td class="num">${r.loans ? fmt(r.loans, BASE) : ''}</td><td class="num">${fmt(r.trade, BASE)}</td>
+          <td>${r.p.ok ? '<span class="badge paid">✓ Agrees</span>' : `<span class="badge bad">✗ Difference</span>`}</td></tr>`
+      )
+      .join('') || '<tr><td colspan="8" class="hint">No intercompany activity yet.</td></tr>') +
+    '</tbody>';
+  document.querySelectorAll('#structure-relations-table tr[data-go-ic]').forEach((tr) => tr.addEventListener('click', () => (location.hash = '#intercompany')));
+}
 
 // ---------- Intercompany reconciliation ----------
 

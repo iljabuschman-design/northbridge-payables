@@ -52,6 +52,7 @@
           <button class="tab" data-tab="bank">Bank</button>
           <button class="tab" data-tab="journals">Journals</button>
           <button class="tab" data-tab="financials">Financials</button>
+          <button class="tab" data-tab="structure">Group overview</button>
           <button class="tab" data-tab="intercompany">Intercompany</button>
           <button class="tab" data-tab="setup">Setup</button>
           <button class="tab" data-tab="assumptions">Assumptions</button>
@@ -429,6 +430,24 @@
         <h2>Profit &amp; loss by cost centre</h2>
         <div class="table-wrap"><table class="table fin" id="cc-table"></table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- Group overview: entities and their relations -->
+  <section id="view-structure" class="view" hidden>
+    <div class="panel">
+      <div class="panel-header wrap">
+        <h2>Group overview</h2>
+        <span class="hint">Click a company to open its financials.</span>
+      </div>
+      <p class="hint">Who owns whom, which companies are consolidated together, and how the companies trade and lend with each other. Dashed boxes are consolidated groups: the consolidated entity adds up the companies inside and holds their eliminations.</p>
+      <div class="cards" id="structure-summary"></div>
+      <div id="structure-chart" class="org-wrap"></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Relations between companies</h2>
+      <p class="hint">Every pair of companies that book transactions with each other (all periods). The relation shows whether they are also linked by ownership; the figures are what they charged each other and what is still outstanding. Click a row to reconcile it on the Intercompany page.</p>
+      <div class="table-wrap"><table class="table" id="structure-relations-table"></table></div>
     </div>
   </section>
 
