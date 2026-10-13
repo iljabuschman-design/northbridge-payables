@@ -70,9 +70,12 @@ async function getCompany() {
 
 const ENTITY_TYPES = {
   holding: 'Holding company',
+  gambling: 'Gambling entity',
+  services: 'Service entity',
+  tech_services: 'Tech services',
+  admin_services: 'Admin services',
   trading: 'Trading company',
   manufacturing: 'Manufacturing',
-  services: 'Shared services',
   property: 'Property',
   distribution: 'Distribution',
   other: 'Other',
@@ -120,6 +123,8 @@ async function entityProfile(data, selfId = null) {
       if (p.id === selfId) throw httpError(400, 'That would make the ownership structure circular');
     }
   }
+  const yearEnd = data.year_end_month ? Number(data.year_end_month) : null;
+  if (yearEnd !== null && !(Number.isInteger(yearEnd) && yearEnd >= 1 && yearEnd <= 12)) throw httpError(400, 'The financial year end is a month from 1 to 12');
   let pct = parentId ? Number(data.ownership_pct ?? 100) : null;
   if (parentId && !(pct > 0 && pct <= 100)) throw httpError(400, 'Ownership must be between 0 and 100%');
   const labels = data.labels && typeof data.labels === 'object' ? data.labels : {};
@@ -130,6 +135,7 @@ async function entityProfile(data, selfId = null) {
     country: clean(data.country),
     framework: clean(data.framework),
     main_currency: currency,
+    year_end_month: yearEnd,
     parent_id: parentId,
     ownership_pct: pct,
     labels_json: Object.keys(labels).length ? JSON.stringify(labels) : null,
@@ -145,9 +151,9 @@ async function createEntity({ code, name, ...profile }) {
   if (await db.get('SELECT 1 FROM entities WHERE code = ?', code)) throw httpError(400, `Entity ${code} already exists`);
   const p = await entityProfile(profile);
   const info = (await db.run(
-    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, parent_id, ownership_pct, labels_json, hide_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
+    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, year_end_month, parent_id, ownership_pct, labels_json, hide_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
   ));
   return (await getEntity(Number(info.lastInsertRowid)));
 }
@@ -158,9 +164,9 @@ async function updateEntity(id, { name, ...profile }) {
   if (name !== undefined && !String(name).trim()) throw httpError(400, 'Entity name is required');
   const p = await entityProfile({ ...existing, ...profile }, existing.id);
   await db.run(
-    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
+    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, year_end_month = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
     name !== undefined ? String(name).trim() : existing.name,
-    p.entity_type, p.country, p.framework, p.main_currency, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
+    p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
   );
   return (await getEntity(existing.id));
 }

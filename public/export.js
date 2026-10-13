@@ -62,7 +62,7 @@ function exportContext() {
 
 function exportFileName(table, ext) {
   const slug = exportTitle(table).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'export';
-  return `northbridge-${slug}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+  return `sc-technology-${slug}-${new Date().toISOString().slice(0, 10)}.${ext}`;
 }
 
 function exportDownload(name, blob) {

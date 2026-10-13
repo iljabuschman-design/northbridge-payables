@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Northbridge Books — Invoices, Bank &amp; Financials</title>
+<title>SC Technology — Invoices, Bank &amp; Financials</title>
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <!-- Shown until the user is logged in -->
 <div class="login-screen" id="login-screen" hidden>
   <form class="login-card" id="form-login">
-    <div class="brand"><span class="brand-mark">NB</span><div><div class="brand-name">Northbridge Books</div><div class="brand-sub">Please log in</div></div></div>
+    <div class="brand"><span class="brand-mark">SC</span><div><div class="brand-name">SC Technology</div><div class="brand-sub">Please log in</div></div></div>
     <label>Username <input name="username" autocomplete="username" required autofocus /></label>
     <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
     <p class="error" id="login-error"></p>
@@ -21,9 +21,9 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <span class="brand-mark">NB</span>
+      <span class="brand-mark">SC</span>
       <div>
-        <div class="brand-name">Northbridge Trading Ltd</div>
+        <div class="brand-name">SC Technology</div>
         <div class="brand-sub">Invoices, bank &amp; financials · base currency <strong>GBP</strong></div>
       </div>
       <label class="entity-picker">Entity
@@ -572,7 +572,7 @@
       <p class="hint">The companies of the group, who owns whom and how each one reports. Each company has its own accounts on top of the shared chart (marked with its code below) and its own names for the lines of its statements.</p>
       <div class="table-wrap">
         <table class="table" id="entities-table">
-          <thead><tr><th>Code</th><th>Company</th><th>Type</th><th>Country</th><th>Reporting framework</th><th>Owned by</th><th class="num">Own accounts</th><th>Statement lines</th><th></th></tr></thead>
+          <thead><tr><th>Code</th><th>Company</th><th>Type</th><th>Country</th><th>Reporting framework</th><th>Financial year</th><th>Owned by</th><th class="num">Own accounts</th><th>Statement lines</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -682,7 +682,7 @@
   <section id="view-assumptions" class="view" hidden>
     <div class="panel prose">
       <h2>Scope &amp; accounting assumptions</h2>
-      <p>This is a demonstration application built around one fictional company, <strong>Northbridge Trading Ltd</strong>, with dummy customers, suppliers and transactions. No real company data, live payment rails or HMRC integration are used.</p>
+      <p>This is a demonstration application built around the <strong>SC Technology</strong> group of nine companies, with dummy customers, suppliers and transactions. No real company data or live payment rails are used.</p>
 
       <h3>Base currency</h3>
       <p>The company's base (reporting) currency is <strong>GBP</strong>. Every invoice, payment and journal carries its own transaction currency (GBP, EUR or USD) plus the exchange rate used to translate it into GBP. All ledger entries are posted in GBP so the books speak one currency; original-currency amounts and rates are kept alongside each entry for reference.</p>
@@ -707,7 +707,7 @@
       <p>Everyone logs in. An <strong>admin</strong> can do everything, including managing users (Setup → Users); a <strong>viewer</strong> can see all screens and reports but can't create, edit, pay, upload, close or delete anything - the server refuses those requests, not just the screen. Passwords are stored as scrypt hashes, an account is locked for 15 minutes after 5 wrong passwords, and a login lasts 7 days. Edits to journals record who made them.</p>
 
       <h3>Entities</h3>
-      <p>The books hold two legal entities, <strong>Northbridge Trading Ltd</strong> and <strong>Northbridge Holding Ltd</strong>. Every journal, invoice, fixed asset and bank statement belongs to exactly one of them. They share the chart of accounts, cost centres, customers, suppliers and periods, but bank accounts (and Holding's investment in its subsidiary) belong to one entity and can only be posted to by that entity. The selector in the top bar shows one entity or all of them; "All entities" simply adds both sets of books together - intercompany balances, the management fee Holding charges Trading and Holding's investment in Trading are <em>not</em> eliminated, so it is not a consolidation.</p>
+      <p>The books hold the nine legal entities of the <strong>SC Technology</strong> group (X1-X9): three holding companies, each with its subsidiaries (X7 owns X8 and X9, X5 owns X6, X1 owns 80% of X2), and two independent UK companies (X3 and X4). Every journal, invoice, fixed asset and bank statement belongs to exactly one of them. They share the chart of accounts, cost centres, customers, suppliers and periods, but bank accounts and some other accounts belong to one entity and can only be posted to by that entity. The selector in the top bar shows one entity or all of them. Group companies are customers and suppliers of each other (marked <em>Group</em>): their invoices, loans and balances are tagged intercompany, reconciled on the Intercompany page and eliminated in the consolidated Financials. The existing invoices and journals are demonstration data and not meant to be accurate for these companies. All books are kept in GBP whatever each company's main currency.</p>
 
       <h3>Editing postings</h3>
       <p>Posted journals can be changed as long as their period is open. Manual and opening journals can be changed completely (date, reference, description, lines and amounts) and must still balance. Journals created by an invoice, payment, bank line, asset purchase or the depreciation run follow that document: their amounts and dates can't change, but the description can, and P&amp;L lines can be moved to another P&amp;L account and/or cost centre (a reclassification); an invoice line moves along with its ledger line. Every change is kept in the journal's history with a before and after copy.</p>
@@ -909,6 +909,9 @@
     <div class="row">
       <label>Reporting framework <input name="framework" maxlength="60" placeholder="UK GAAP (FRS 102)" /></label>
       <label>Main currency <select name="main_currency" class="currency-select"></select></label>
+    </div>
+    <div class="row">
+      <label>Financial year ends in <select name="year_end_month"></select></label>
     </div>
     <div class="row">
       <label style="flex:2">Owned by <select name="parent_id"></select></label>

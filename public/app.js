@@ -1458,6 +1458,13 @@ const entityForm = document.getElementById('form-entity');
 let editingEntity = null;
 const LABEL_FIELDS = ['revenue', 'cost_of_sales', 'overheads', 'fixed_assets'];
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** "January - December" for a year ending in December, "June - May" for one ending in May. */
+function financialYearText(endMonth) {
+  const m = Number(endMonth);
+  return `${MONTH_NAMES[m % 12].slice(0, 3)} - ${MONTH_NAMES[m - 1].slice(0, 3)}`;
+}
+
 function renderEntities() {
   const catName = (key) => (META.categories.find((c) => c.key === key) || {}).name || key;
   document.querySelector('#entities-table tbody').innerHTML = META.entities
@@ -1472,6 +1479,7 @@ function renderEntities() {
         <td>${esc(e.type_name || '')}</td>
         <td>${esc(e.country || '')}${e.main_currency ? ` <span class="muted">· ${esc(e.main_currency)}</span>` : ''}</td>
         <td>${esc(e.framework || '')}</td>
+        <td class="nowrap">${e.year_end_month ? esc(financialYearText(e.year_end_month)) : ''}</td>
         <td>${parent ? `${esc(parent.code)} <span class="muted">${e.ownership_pct}%</span>` : '<span class="muted">Top of the group</span>'}</td>
         <td class="num" title="${esc(own.map((a) => accountLabel(a)).join('\n'))}">${own.length}</td>
         <td class="muted" title="${esc(labelText)}">${labels.length ? `${labels.length} renamed${(e.hide || []).length ? `, ${(e.hide || []).length} hidden when empty` : ''}` : 'Standard'}</td>
@@ -1494,8 +1502,11 @@ function openEntityDialog(entity) {
   entityForm.parent_id.innerHTML =
     '<option value="">Top of the group</option>' +
     META.entities.filter((e) => !entity || e.id !== entity.id).map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('');
+  entityForm.year_end_month.innerHTML =
+    '<option value="">Not set</option>' + MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m} (year runs ${financialYearText(i + 1)})</option>`).join('');
   entityForm.code.disabled = !!entity;
   if (entity) {
+    entityForm.year_end_month.value = entity.year_end_month || '';
     entityForm.code.value = entity.code;
     entityForm.name.value = entity.name;
     entityForm.entity_type.value = entity.entity_type || 'other';
@@ -1525,6 +1536,7 @@ entityForm.addEventListener('submit', async (e) => {
     country: entityForm.country.value.trim(),
     framework: entityForm.framework.value.trim(),
     main_currency: entityForm.main_currency.value,
+    year_end_month: entityForm.year_end_month.value || null,
     parent_id: entityForm.parent_id.value || null,
     ownership_pct: Number(entityForm.ownership_pct.value) || 100,
     labels,
@@ -2920,7 +2932,7 @@ function renderPay() {
         ${bankHeader('Business online banking')}
         <div class="sim-bank-body">
           <h2>Log in to approve a payment</h2>
-          <p class="hint">Northbridge Books is asking to make a payment from your account. This is a simulation: there is no real login, so never enter real bank details here.</p>
+          <p class="hint">SC Technology is asking to make a payment from your account. This is a simulation: there is no real login, so never enter real bank details here.</p>
           <div class="pay-fields">
             <div class="pay-field"><span class="k">Customer</span><strong>${esc(inv.entity_name)} (demo)</strong></div>
             <div class="pay-field"><span class="k">Security</span><strong>Demo passcode accepted automatically</strong></div>
@@ -4457,7 +4469,8 @@ async function finishStart() {
   } catch {
     /* remembering the entity is optional */
   }
-  CURRENT_ENTITY = saved !== null && (saved === '' || META.entities.some((e) => String(e.id) === saved)) ? saved : String(META.entities[0].id);
+  // First visit: the whole group; later visits remember the company last chosen.
+  CURRENT_ENTITY = saved !== null && (saved === '' || META.entities.some((e) => String(e.id) === saved)) ? saved : '';
   fillEntitySelect();
   sel.addEventListener('change', () => {
     CURRENT_ENTITY = sel.value;

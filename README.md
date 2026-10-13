@@ -1,4 +1,4 @@
-# Northbridge Books (northbridge-payables)
+# SC Technology (northbridge-payables)
 
 **Live demo:** https://northbridge-payables.onrender.com — hosted on Render's free tier, so the first request after a period of inactivity can take 30-50s to wake the instance up; it's fast after that.
 

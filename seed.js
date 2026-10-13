@@ -6,44 +6,51 @@ const assets = require('./assets');
 
 const { ROLES } = acct;
 
-// ----- The group: six companies, each with its own profile and reporting -----
-// "labels" rename reporting categories in that company's statements, "hide" leaves
-// empty categories out of them. Ownership is set after all companies exist.
+// ----- The group (see "Companies structure" deck): nine companies in four groups -----
+// `code` is the key used inside this file, `x` the code shown in the app (X1-X9 as on the deck).
+// "labels" rename reporting categories in that company's statements, "hide" leaves empty
+// categories out of them. Ownership is set after all companies exist.
+const HOLDING_LABELS = { revenue: 'Management fee income', overheads: 'Holding company costs', financial_income: 'Interest & dividends received', fixed_assets: 'Investments in subsidiaries', financial_assets: 'Loans to group companies' };
+const GAMBLING_LABELS = { revenue: 'Gaming revenue', cost_of_sales: 'Cost of gaming operations', overheads: 'Marketing & administrative expenses' };
 const ENTITIES = [
   {
-    code: 'NBT', name: 'Northbridge Trading Ltd', entity_type: 'trading', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP',
-    parent: 'NBH', pct: 100, labels: {}, hide: [],
+    code: 'SPARK', x: 'X1', name: 'Sparkworks Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
   },
   {
-    code: 'NBH', name: 'Northbridge Holding Ltd', entity_type: 'holding', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP',
-    labels: { revenue: 'Management fee income', overheads: 'Holding company costs', financial_income: 'Interest & dividends received', fixed_assets: 'Investments in subsidiaries', financial_assets: 'Loans to group companies' },
-    hide: ['cost_of_sales', 'depreciation'],
+    code: 'NBU', x: 'X2', name: 'JMS Investment Group N.V', entity_type: 'gambling', country: 'Curacao', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    parent: 'SPARK', pct: 80, labels: GAMBLING_LABELS, hide: ['depreciation'],
   },
   {
-    code: 'NBM', name: 'Northbridge Manufacturing GmbH', entity_type: 'manufacturing', country: 'Germany', framework: 'HGB (German GAAP)', main_currency: 'EUR',
-    parent: 'NBH', pct: 100,
-    labels: { revenue: 'Net sales (Umsatzerlöse)', cost_of_sales: 'Cost of goods manufactured', overheads: 'Selling & administrative expenses', inventory: 'Inventories (Vorräte)', fixed_assets: 'Property, plant & equipment (Sachanlagen)', long_term_liabilities: 'Loans from group companies' },
-    hide: [],
+    code: 'NBP', x: 'X3', name: 'SC Technology Limited', entity_type: 'tech_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
+    labels: { revenue: 'Technology service fees', cost_of_sales: 'Direct delivery costs', overheads: 'Operating expenses' }, hide: ['depreciation'],
   },
   {
-    code: 'NBS', name: 'Northbridge Shared Services Ltd', entity_type: 'services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP',
-    parent: 'NBH', pct: 100,
-    labels: { revenue: 'Service charges to group companies', cost_of_sales: 'Direct service delivery costs', overheads: 'Operating expenses' },
-    hide: ['depreciation', 'inventory'],
+    code: 'NACS', x: 'X4', name: 'NACS Technology Limited', entity_type: 'admin_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
+    labels: { revenue: 'Administration service fees', cost_of_sales: 'Cost of services', overheads: 'Staff & office costs' }, hide: ['depreciation'],
   },
   {
-    code: 'NBP', name: 'Northbridge Properties Ltd', entity_type: 'property', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP',
-    parent: 'NBH', pct: 100,
-    labels: { revenue: 'Rental income', cost_of_sales: 'Property operating costs', overheads: 'Property management costs', fixed_assets: 'Investment property', financial_expenses: 'Interest on borrowings', long_term_liabilities: 'Mortgage & group loans' },
-    hide: ['depreciation', 'inventory'],
+    code: 'VOX', x: 'X5', name: 'Voxivibe Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
   },
   {
-    code: 'NBU', name: 'Northbridge Inc.', entity_type: 'distribution', country: 'United States', framework: 'US GAAP', main_currency: 'USD',
-    parent: 'NBH', pct: 80,
-    labels: { revenue: 'Net sales', cost_of_sales: 'Cost of goods sold', overheads: 'Selling, general & administrative', inventory: 'Inventory', equity: 'Stockholders’ equity (incl. 20% minority)' },
-    hide: ['depreciation'],
+    code: 'NBM', x: 'X6', name: 'Luminect Limited B.V.', entity_type: 'gambling', country: 'Curacao', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    parent: 'VOX', pct: 100, labels: GAMBLING_LABELS, hide: ['depreciation'],
+  },
+  {
+    code: 'NBH', x: 'X7', name: 'STech Technology Holding (CY) Limited', entity_type: 'holding', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
+  },
+  {
+    code: 'NBT', x: 'X8', name: 'STech Technology UK Ltd', entity_type: 'gambling', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 8,
+    parent: 'NBH', pct: 100, labels: GAMBLING_LABELS, hide: [],
+  },
+  {
+    code: 'NBS', x: 'X9', name: 'STech European Entertainment Limited', entity_type: 'services', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    parent: 'NBH', pct: 100, labels: { revenue: 'Service fees from group companies', cost_of_sales: 'Direct service costs', overheads: 'Operating expenses' }, hide: ['depreciation', 'inventory'],
   },
 ];
+const ENTITY_NAME = Object.fromEntries(ENTITIES.map((e) => [e.code, e.name]));
 
 // A code in `entity` restricts the account to that company: it is that company's own
 // chart of accounts on top of the shared one.
@@ -52,17 +59,17 @@ const ACCOUNTS = [
   { code: '0210', name: 'Machinery - accumulated depreciation', category: 'accumulated_depreciation', role: ROLES.MACHINERY_ACCUM },
   { code: '0300', name: 'Inventory - investment', category: 'fixed_assets', role: ROLES.INVENTORY_COST },
   { code: '0310', name: 'Inventory - accumulated depreciation', category: 'accumulated_depreciation', role: ROLES.INVENTORY_ACCUM },
-  { code: '0500', name: 'Investment in subsidiaries', category: 'fixed_assets', entity: 'NBH' },
+  { code: '0500', name: 'Investment in subsidiaries', category: 'fixed_assets' },
   { code: '0600', name: 'Investment property', category: 'fixed_assets', entity: 'NBP' },
-  { code: '1000', name: 'Bank - GBP', category: 'cash', bank_currency: 'GBP', iban: 'GB29NWBK60161331926819', entity: 'NBT' },
-  { code: '1010', name: 'Bank - EUR', category: 'cash', bank_currency: 'EUR', iban: 'DE89370400440532013000', entity: 'NBT' },
-  { code: '1020', name: 'Bank - USD', category: 'cash', bank_currency: 'USD', iban: 'GB33BUKB20201555555555', entity: 'NBT' },
-  { code: '1050', name: 'Bank - GBP (Holding)', category: 'cash', bank_currency: 'GBP', iban: 'GB82WEST12345698765432', entity: 'NBH' },
-  { code: '1060', name: 'Bank - EUR (Manufacturing)', category: 'cash', bank_currency: 'EUR', iban: 'DE44500105175407324931', entity: 'NBM' },
-  { code: '1061', name: 'Bank - GBP (Manufacturing)', category: 'cash', bank_currency: 'GBP', iban: 'DE02120300000000202051', entity: 'NBM' },
-  { code: '1070', name: 'Bank - GBP (Shared Services)', category: 'cash', bank_currency: 'GBP', iban: 'GB15MIDL40051512345674', entity: 'NBS' },
-  { code: '1080', name: 'Bank - GBP (Properties)', category: 'cash', bank_currency: 'GBP', iban: 'GB94BARC10201530093459', entity: 'NBP' },
-  { code: '1090', name: 'Bank - USD (Inc.)', category: 'cash', bank_currency: 'USD', iban: 'GB88NWBK60161331926801', entity: 'NBU' },
+  { code: '1000', name: 'Bank - GBP (X8 STech UK)', category: 'cash', bank_currency: 'GBP', iban: 'GB29NWBK60161331926819', entity: 'NBT' },
+  { code: '1010', name: 'Bank - EUR (X8 STech UK)', category: 'cash', bank_currency: 'EUR', iban: 'DE89370400440532013000', entity: 'NBT' },
+  { code: '1020', name: 'Bank - USD (X8 STech UK)', category: 'cash', bank_currency: 'USD', iban: 'GB33BUKB20201555555555', entity: 'NBT' },
+  { code: '1050', name: 'Bank - GBP (X7 Holding)', category: 'cash', bank_currency: 'GBP', iban: 'GB82WEST12345698765432', entity: 'NBH' },
+  { code: '1060', name: 'Bank - EUR (X6 Luminect)', category: 'cash', bank_currency: 'EUR', iban: 'DE44500105175407324931', entity: 'NBM' },
+  { code: '1061', name: 'Bank - GBP (X6 Luminect)', category: 'cash', bank_currency: 'GBP', iban: 'DE02120300000000202051', entity: 'NBM' },
+  { code: '1070', name: 'Bank - GBP (X9 STech European)', category: 'cash', bank_currency: 'GBP', iban: 'GB15MIDL40051512345674', entity: 'NBS' },
+  { code: '1080', name: 'Bank - GBP (X3 SC Technology)', category: 'cash', bank_currency: 'GBP', iban: 'GB94BARC10201530093459', entity: 'NBP' },
+  { code: '1090', name: 'Bank - USD (X2 JMS)', category: 'cash', bank_currency: 'USD', iban: 'GB88NWBK60161331926801', entity: 'NBU' },
   { code: '1100', name: 'Accounts receivable', category: 'receivables', role: ROLES.AR },
   { code: '1200', name: 'VAT recoverable (input VAT)', category: 'other_current_assets', role: ROLES.VAT_IN },
   { code: '1300', name: 'Prepayments', category: 'other_current_assets' },
@@ -153,12 +160,14 @@ async function seedIfEmpty() {
 }
 
 async function seed() {
-  (await db.run('INSERT INTO company (id, name, base_currency) VALUES (1, ?, ?)', 'Northbridge Group', 'GBP'));
+  (await db.run('INSERT INTO company (id, name, base_currency) VALUES (1, ?, ?)', 'SC Technology', 'GBP'));
 
   // ----- The six companies and who owns whom -----
   const E = {};
   for (const e of ENTITIES) {
-    E[e.code] = (await acct.createEntity({ code: e.code, name: e.name, entity_type: e.entity_type, country: e.country, framework: e.framework, main_currency: e.main_currency, labels: e.labels, hide: e.hide })).id;
+    E[e.code] = (await acct.createEntity({
+      code: e.x, name: e.name, entity_type: e.entity_type, country: e.country, framework: e.framework, main_currency: e.main_currency, year_end_month: e.year_end_month, labels: e.labels, hide: e.hide,
+    })).id;
   }
   for (const e of ENTITIES) {
     if (e.parent) (await acct.updateEntity(E[e.code], { parent_id: E[e.parent], ownership_pct: e.pct }));
@@ -197,11 +206,14 @@ async function seed() {
   // these are intercompany: their postings carry the other company as counterparty.
   const GROUP_PARTY = {
     NBT: { country: 'United Kingdom', currency: 'GBP', vat_number: 'GB444555666', sort_code: '20-45-45', account_number: '40123456' },
-    NBH: { country: 'United Kingdom', currency: 'GBP', vat_number: 'GB111222333', sort_code: '60-16-13', account_number: '31926820' },
-    NBM: { country: 'Germany', currency: 'EUR', vat_number: 'DE811223344', iban: 'DE44500105175407324931', bic: 'INGDDEFFXXX' },
-    NBS: { country: 'United Kingdom', currency: 'GBP', vat_number: 'GB222333444', sort_code: '30-90-10', account_number: '22334455' },
+    NBH: { country: 'Malta', currency: 'EUR', vat_number: 'MT87654321', iban: 'MT31MALT011000000000MTLCAST001S', bic: 'MALTMTMT' },
+    NBM: { country: 'Curacao', currency: 'EUR', vat_number: null, iban: 'DE44500105175407324931', bic: 'INGDDEFFXXX' },
+    NBS: { country: 'Malta', currency: 'EUR', vat_number: 'MT12345678', iban: 'MT84MALT011000012345MTLCAST001S', bic: 'MALTMTMT' },
     NBP: { country: 'United Kingdom', currency: 'GBP', vat_number: 'GB333444555', sort_code: '40-05-30', account_number: '55667788' },
-    NBU: { country: 'United States', currency: 'USD', vat_number: null, iban: 'GB88NWBK60161331926801', bic: 'NWBKGB2L' },
+    NBU: { country: 'Curacao', currency: 'EUR', vat_number: null, iban: 'GB88NWBK60161331926801', bic: 'NWBKGB2L' },
+    SPARK: { country: 'Cyprus', currency: 'EUR', vat_number: 'CY10203040A', iban: 'CY17002001280000001200527600', bic: 'BCYPCY2N' },
+    VOX: { country: 'Cyprus', currency: 'EUR', vat_number: 'CY10506070B', iban: 'CY21002001950000357001234567', bic: 'BCYPCY2N' },
+    NACS: { country: 'United Kingdom', currency: 'GBP', vat_number: 'GB555777999', sort_code: '20-10-30', account_number: '77889900' },
   };
   const groupSupplier = {};
   const groupCustomer = {};
@@ -212,7 +224,7 @@ async function seed() {
   }
 
   // ----- Opening balances -----
-  // Northbridge Trading: bank accounts, share capital (held by Holding) and the assets taken over.
+  // STech Technology UK (X8): bank accounts, share capital (held by X7) and the assets taken over.
   const sumAssets = (list, type, key) => list.filter((a) => a.asset_type === type).reduce((t, a) => t + a[key], 0);
   const withOpening = (list) => list.map((a) => ({ ...a, opening_depreciation: assets.depreciationBefore(a, '2026-06') }));
   const opening = withOpening(OPENING_ASSETS);
@@ -231,28 +243,32 @@ async function seed() {
       { account_code: '0210', credit: sumAssets(opening, 'machinery', 'opening_depreciation') },
       { account_code: '0300', debit: sumAssets(opening, 'inventory', 'acquisition_cost') },
       { account_code: '0310', credit: sumAssets(opening, 'inventory', 'opening_depreciation') },
-      { account_code: '3000', credit: 150000, counterparty_entity_id: H, description: 'Share capital held by Northbridge Holding Ltd' },
+      { account_code: '3000', credit: 150000, counterparty_entity_id: H, description: 'Share capital held by STech Technology Holding (CY) Limited' },
       { account_code: '3100', credit: nbv, description: 'Retained earnings from prior years' },
     ],
   }));
   for (const a of opening) (await assets.createAsset({ ...a, entity_id: T, booking: 'existing', depreciation_start: '2026-06' }));
 
-  // Holding: owns the shares in all five subsidiaries and holds cash.
-  const INVESTMENT = { NBT: 150000, NBM: 200000, NBS: 50000, NBP: 300000, NBU: 80000 };
-  (await acct.postJournal({
-    entity_id: H,
-    journal_date: BOOKS_START,
-    reference: 'OPEN',
-    description: 'Opening balances',
-    source_type: 'opening',
-    lines: [
-      ...Object.entries(INVESTMENT).map(([code, amount]) => ({
-        account_code: '0500', debit: amount, counterparty_entity_id: E[code], description: `Shares in ${ENTITIES.find((e) => e.code === code).name}`,
-      })),
-      { account_code: '1050', debit: 620000 },
-      { account_code: '3000', credit: 1400000 },
-    ],
-  }));
+  // The holding companies own the shares of their subsidiaries (X7 -> X8, X9; X5 -> X6; X1 -> X2)
+  // and are financed by their own shareholders. X3 and X4 are independent companies.
+  const holdingOpening = async (holder, bank, investments, capital) =>
+    acct.postJournal({
+      entity_id: E[holder],
+      journal_date: BOOKS_START,
+      reference: 'OPEN',
+      description: 'Opening balances',
+      source_type: 'opening',
+      lines: [
+        ...Object.entries(investments).map(([code, amount]) => ({
+          account_code: '0500', debit: amount, counterparty_entity_id: E[code], description: `Shares in ${ENTITY_NAME[code]}`,
+        })),
+        ...(bank ? [{ account_code: bank.code, debit: bank.amount }] : []),
+        { account_code: '3000', credit: capital, description: 'Share capital held by the shareholders' },
+      ],
+    });
+  (await holdingOpening('NBH', { code: '1050', amount: 620000 }, { NBT: 150000, NBS: 50000 }, 820000));
+  (await holdingOpening('VOX', null, { NBM: 200000 }, 200000));
+  (await holdingOpening('SPARK', null, { NBU: 80000 }, 80000));
 
   // Manufacturing (Germany): EUR and GBP bank accounts, stock, machinery.
   const nbmAssets = withOpening(MANUFACTURING_ASSETS);
@@ -282,7 +298,7 @@ async function seed() {
       { account_code: '0210', credit: nbmAccum['0210'] },
       { account_code: '0300', debit: nbmDebits['0300'] },
       { account_code: '0310', credit: nbmAccum['0310'] },
-      { account_code: '3000', credit: nbmCapital, counterparty_entity_id: H, description: 'Share capital held by Northbridge Holding Ltd' },
+      { account_code: '3000', credit: nbmCapital, counterparty_entity_id: E.VOX, description: 'Share capital held by Voxivibe Holding Limited' },
       { account_code: '3100', credit: nbmRetained, description: 'Retained earnings from prior years' },
     ],
   }));
@@ -298,7 +314,7 @@ async function seed() {
     lines: [
       { account_code: '1070', debit: 45000 },
       { account_code: '3100', debit: 5000, description: 'Accumulated loss brought forward' },
-      { account_code: '3000', credit: 50000, counterparty_entity_id: H, description: 'Share capital held by Northbridge Holding Ltd' },
+      { account_code: '3000', credit: 50000, counterparty_entity_id: H, description: 'Share capital held by STech Technology Holding (CY) Limited' },
     ],
   }));
 
@@ -313,7 +329,7 @@ async function seed() {
       { account_code: '1080', debit: 90000 },
       { account_code: '0600', debit: 1200000 },
       { account_code: '2500', credit: 500000, description: 'Mortgage loan (external bank)' },
-      { account_code: '3000', credit: 300000, counterparty_entity_id: H, description: 'Share capital held by Northbridge Holding Ltd' },
+      { account_code: '3000', credit: 300000, description: 'Share capital held by its own shareholders' },
       { account_code: '3100', credit: 490000, description: 'Retained earnings from prior years' },
     ],
   }));
@@ -329,7 +345,7 @@ async function seed() {
       { account_code: '1090', debit: 46800, currency: 'USD', fx_note: '60000.00 USD @ 0.78' },
       { account_code: '1520', debit: 30000 },
       { account_code: '3100', debit: 23200, description: 'Accumulated loss brought forward' },
-      { account_code: '3000', credit: 80000, counterparty_entity_id: H, description: 'Share capital held by Northbridge Holding Ltd (80%)' },
+      { account_code: '3000', credit: 80000, counterparty_entity_id: E.SPARK, description: 'Share capital held by Sparkworks Holding Limited (80%)' },
       { account_code: '3000', credit: 20000, description: 'Share capital held by minority shareholders (20%)' },
     ],
   }));
@@ -604,14 +620,14 @@ async function seed() {
   // ===== Intercompany: loans and interest from Holding =====
   const loan = async (borrower, date, amount, bank) => {
     (await acct.postJournal({
-      entity_id: H, journal_date: date, reference: `LOAN-${borrower}`, description: `Loan to ${ENTITIES.find((e) => e.code === borrower).name}`, source_type: 'manual',
+      entity_id: H, journal_date: date, reference: `LOAN-${borrower}`, description: `Loan to ${ENTITY_NAME[borrower]}`, source_type: 'manual',
       lines: [
         { account_code: '1400', debit: amount, counterparty_entity_id: E[borrower] },
         { account_code: '1050', credit: amount },
       ],
     }));
     (await acct.postJournal({
-      entity_id: E[borrower], journal_date: date, reference: `LOAN-NBH`, description: 'Loan from Northbridge Holding Ltd', source_type: 'manual',
+      entity_id: E[borrower], journal_date: date, reference: `LOAN-NBH`, description: `Loan from ${ENTITY_NAME.NBH}`, source_type: 'manual',
       lines: [
         { account_code: bank, debit: amount },
         { account_code: '2450', credit: amount, counterparty_entity_id: H },
@@ -620,14 +636,14 @@ async function seed() {
   };
   const interest = async (borrower, date, lenderAmount, borrowerAmount) => {
     (await acct.postJournal({
-      entity_id: H, journal_date: date, reference: `INT-${borrower}`, description: `Interest ${date.slice(0, 7)} on loan to ${borrower}`, source_type: 'manual',
+      entity_id: H, journal_date: date, reference: `INT-${borrower}`, description: `Interest ${date.slice(0, 7)} on loan to ${ENTITY_NAME[borrower]}`, source_type: 'manual',
       lines: [
         { account_code: '1410', debit: lenderAmount, counterparty_entity_id: E[borrower] },
         { account_code: '7300', credit: lenderAmount, counterparty_entity_id: E[borrower] },
       ],
     }));
     (await acct.postJournal({
-      entity_id: E[borrower], journal_date: date, reference: 'INT-NBH', description: `Interest ${date.slice(0, 7)} on loan from NBH`, source_type: 'manual',
+      entity_id: E[borrower], journal_date: date, reference: 'INT-NBH', description: `Interest ${date.slice(0, 7)} on loan from ${ENTITY_NAME.NBH}`, source_type: 'manual',
       lines: [
         { account_code: '7400', debit: borrowerAmount, counterparty_entity_id: H },
         { account_code: '2460', credit: borrowerAmount, counterparty_entity_id: H },
@@ -645,7 +661,7 @@ async function seed() {
   for (const date of ['2026-08-31', '2026-09-30']) (await interest('NBU', date, 300, 300));
   // E7: the US company repaid GBP 10,000 on 30 September; Holding has not booked the receipt yet.
   (await acct.postJournal({
-    entity_id: E.NBU, journal_date: '2026-09-30', reference: 'LOAN-REPAY', description: 'Repayment of loan from Northbridge Holding Ltd', source_type: 'manual',
+    entity_id: E.NBU, journal_date: '2026-09-30', reference: 'LOAN-REPAY', description: `Repayment of loan from ${ENTITY_NAME.NBH}`, source_type: 'manual',
     lines: [
       { account_code: '2450', debit: 10000, counterparty_entity_id: H },
       { account_code: '1090', credit: 10000, currency: 'USD', fx_note: '12820.51 USD @ 0.78' },

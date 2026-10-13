@@ -15,7 +15,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 // Bump this whenever the schema changes incompatibly: the app's tables are
 // then dropped and rebuilt (and reseeded with demo data on startup).
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS entities (
   country TEXT,
   framework TEXT,
   main_currency TEXT,
+  -- Last month of the financial year (12 = the year runs January to December).
+  year_end_month INTEGER,
   parent_id INTEGER REFERENCES entities(id),
   ownership_pct REAL,
   labels_json TEXT,
@@ -434,7 +436,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 const TABLES = [
   'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
-  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'reimbursements', 'merchant_profiles', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'schema_meta',
+  'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'reimbursements', 'merchant_profiles', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'hmrc_connections', 'hmrc_oauth_states', 'schema_meta',
 ];
 
 const txStore = new AsyncLocalStorage();
