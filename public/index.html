@@ -402,7 +402,6 @@
         <label>Entity <select name="entity" id="fin-entity-select"></select></label>
         <label>From <select name="from"></select></label>
         <label>To <select name="to"></select></label>
-        <label>P&amp;L for <select name="cost_center" id="fin-cc-select"></select></label>
         <button type="submit" class="btn">Update</button>
         <label class="check"><input type="checkbox" id="fin-detail" checked /> Show accounts</label>
         <label class="check" id="fin-consolidated-wrap" hidden><input type="checkbox" id="fin-consolidated" checked /> Eliminate intercompany (consolidated)</label>
@@ -411,7 +410,10 @@
     <p class="hint entity-note"></p>
     <div class="fin-grid">
       <div class="panel">
-        <h2>Profit &amp; loss</h2>
+        <div class="panel-header wrap">
+          <h2>Profit &amp; loss</h2>
+          <label class="inline-filter" title="Only the profit &amp; loss follows this choice; the balance sheet and cash flow always cover the whole company">Cost centre <select id="fin-cc-select"></select></label>
+        </div>
         <p class="hint" id="pl-period"></p>
         <table class="table fin" id="pl-table"></table>
       </div>

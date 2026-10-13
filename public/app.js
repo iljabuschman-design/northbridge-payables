@@ -1341,6 +1341,7 @@ periodForm.addEventListener('submit', (e) => {
   loadFinancials();
 });
 document.getElementById('fin-consolidated').addEventListener('change', () => loadFinancials());
+document.getElementById('fin-cc-select').addEventListener('change', () => loadFinancials());
 document.getElementById('fin-entity-select').addEventListener('change', (e) => {
   FIN_ENTITY = e.target.value;
   loadFinancials();
@@ -1372,7 +1373,7 @@ const subtotal = (label, value, cls = 'sub') => `<tr class="${cls}"><td>${esc(la
 async function loadFinancials() {
   await Promise.all([loadPeriods(), loadCostCenters()]);
   fillPeriodSelects(periodForm);
-  const ccSel = periodForm.cost_center;
+  const ccSel = document.getElementById('fin-cc-select');
   const ccPrev = ccSel.value;
   ccSel.innerHTML =
     '<option value="">Whole company</option>' +
