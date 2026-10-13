@@ -72,7 +72,7 @@ function amountByLabels(lines, labels, skip = () => false) {
  * (from OCR or pdf.js). file_base64 + content_type: the (downsized) image or PDF.
  */
 async function scanReceipt({ filename, content_type, file_base64, lines, entity_id }, user) {
-  const entity = await acct.requireEntity(entity_id);
+  const entity = await acct.requireOperatingEntity(entity_id);
   if (!TYPES[content_type]) throw httpError(400, 'Upload a photo (JPEG/PNG) or a PDF');
   const data = Buffer.from(String(file_base64 || ''), 'base64');
   if (!data.length) throw httpError(400, 'The file is empty');
@@ -135,7 +135,7 @@ const claimSelect = `SELECT r.*, e.code AS entity_code, a.name AS account_name, 
 
 async function listClaims(entityId) {
   const E = acct.entityOf(entityId);
-  return db.all(`${claimSelect} WHERE (?::int IS NULL OR r.entity_id = ?) ORDER BY r.receipt_date DESC, r.id DESC`, E, E);
+  return db.all(`${claimSelect} WHERE (?::int IS NULL OR r.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?)) ORDER BY r.receipt_date DESC, r.id DESC`, E, E);
 }
 
 async function getClaim(id) {
@@ -161,7 +161,7 @@ async function learnMerchant(c) {
 
 /** Save a claim (status "submitted"). The merchant's booking is learned for next time. */
 async function createClaim(body, user) {
-  const entity = await acct.requireEntity(body.entity_id);
+  const entity = await acct.requireOperatingEntity(body.entity_id);
   const merchant = String(body.merchant || '').trim();
   if (!merchant) throw httpError(400, 'Who was paid? Fill in the merchant');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(body.receipt_date || '')) throw httpError(400, 'Fill in the date on the receipt');

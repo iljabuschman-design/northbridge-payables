@@ -172,6 +172,16 @@ async function seed() {
   for (const e of ENTITIES) {
     if (e.parent) (await acct.updateEntity(E[e.code], { parent_id: E[e.parent], ownership_pct: e.pct }));
   }
+  // A consolidated entity for each holding company's group: it adds up the group's companies and
+  // is where the intercompany eliminations are booked (journals, to be defined).
+  for (const code of ['NBH', 'VOX', 'SPARK']) {
+    const h = ENTITIES.find((e) => e.code === code);
+    (await acct.createEntity({
+      code: `${h.x}-CONS`, name: `${h.name} - Consolidated`, entity_type: 'consolidation', consolidation_of: E[code],
+      country: h.country, framework: h.framework, main_currency: h.main_currency, year_end_month: h.year_end_month,
+      labels: h.labels, hide: h.hide,
+    }));
+  }
   const T = E.NBT;
   const H = E.NBH;
 

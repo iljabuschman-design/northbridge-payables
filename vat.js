@@ -59,6 +59,7 @@ function checkPeriod(from, to) {
 /** The nine boxes for an entity and period, plus what they were built from. */
 async function calculate({ entity_id, from, to }) {
   const entity = await acct.requireEntity(entity_id);
+  if (entity.is_consolidation) throw httpError(400, 'A consolidated entity files no VAT return: choose one of the companies');
   checkPeriod(from, to);
 
   const sums = async (type) =>
@@ -125,7 +126,7 @@ async function listReturns(entityId) {
   const E = acct.entityOf(entityId);
   const rows = await db.all(
     `SELECT v.*, e.code AS entity_code, e.name AS entity_name FROM vat_returns v JOIN entities e ON e.id = v.entity_id
-     WHERE (?::int IS NULL OR v.entity_id = ?) ORDER BY v.period_start DESC, v.id DESC`,
+     WHERE (?::int IS NULL OR v.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?)) ORDER BY v.period_start DESC, v.id DESC`,
     E, E
   );
   // Flag returns whose figures no longer match the books (something was booked or changed afterwards).

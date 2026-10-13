@@ -15,7 +15,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 // Bump this whenever the schema changes incompatibly: the app's tables are
 // then dropped and rebuilt (and reseeded with demo data on startup).
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
@@ -39,10 +39,20 @@ CREATE TABLE IF NOT EXISTS entities (
   main_currency TEXT,
   -- Last month of the financial year (12 = the year runs January to December).
   year_end_month INTEGER,
+  -- A consolidated entity: the holding company whose group it consolidates (see entity_members).
+  consolidation_of INTEGER REFERENCES entities(id),
   parent_id INTEGER REFERENCES entities(id),
   ownership_pct REAL,
   labels_json TEXT,
   hide_json TEXT
+);
+
+-- Which entities' books make up an entity: itself, and for a consolidated entity also the holding
+-- company and everything below it. Rebuilt whenever entities change (see accounting.js).
+CREATE TABLE IF NOT EXISTS entity_members (
+  entity_id INTEGER NOT NULL,
+  member_id INTEGER NOT NULL,
+  PRIMARY KEY (entity_id, member_id)
 );
 
 -- Chart of accounts. "category" maps each ledger account onto a line of the
@@ -434,7 +444,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 
 // Every table of this app, in dependency order (used to rebuild after a schema change).
 const TABLES = [
-  'company', 'entities', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
+  'company', 'entities', 'entity_members', 'accounts', 'suppliers', 'customers', 'cost_centers', 'periods', 'invoices', 'invoice_lines',
   'payments', 'journals', 'journal_audit', 'ledger_entries', 'fx_rates', 'bank_statements', 'bank_statement_lines',
   'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'reimbursements', 'merchant_profiles', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'hmrc_connections', 'hmrc_oauth_states', 'schema_meta',
 ];

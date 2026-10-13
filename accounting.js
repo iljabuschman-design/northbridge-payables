@@ -69,6 +69,7 @@ async function getCompany() {
 // ---------- Entities ----------
 
 const ENTITY_TYPES = {
+  consolidation: 'Consolidated group',
   holding: 'Holding company',
   gambling: 'Gambling entity',
   services: 'Service entity',
@@ -91,11 +92,35 @@ function decorateEntity(e) {
     }
   };
   const { labels_json, hide_json, ...rest } = e;
-  return { ...rest, type_name: ENTITY_TYPES[e.entity_type] || e.entity_type || '', labels: parse(labels_json, {}), hide: parse(hide_json, []) };
+  return { ...rest, is_consolidation: e.entity_type === 'consolidation', type_name: ENTITY_TYPES[e.entity_type] || e.entity_type || '', labels: parse(labels_json, {}), hide: parse(hide_json, []) };
 }
 
 async function listEntities() {
-  return (await db.all('SELECT * FROM entities ORDER BY id')).map(decorateEntity);
+  const rows = (await db.all('SELECT * FROM entities ORDER BY id')).map(decorateEntity);
+  const members = await db.all('SELECT entity_id, member_id FROM entity_members WHERE entity_id <> member_id');
+  for (const e of rows) e.members = members.filter((m) => m.entity_id === e.id).map((m) => m.member_id);
+  return rows;
+}
+
+/**
+ * Keep entity_members up to date: every entity is a member of itself, and a consolidated
+ * entity also has the holding company it consolidates and all companies below it.
+ */
+async function rebuildEntityMembers() {
+  const all = await db.all('SELECT id, parent_id, consolidation_of, entity_type FROM entities');
+  const rows = [];
+  for (const e of all) {
+    rows.push([e.id, e.id]);
+    if (e.entity_type !== 'consolidation' || !e.consolidation_of) continue;
+    const seen = new Set([e.consolidation_of]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const c of all) if (c.parent_id && seen.has(c.parent_id) && !seen.has(c.id)) { seen.add(c.id); grew = true; }
+    }
+    for (const id of seen) rows.push([e.id, id]);
+  }
+  await db.run('DELETE FROM entity_members');
+  for (const [entity, member] of rows) await db.run('INSERT INTO entity_members (entity_id, member_id) VALUES (?, ?)', entity, member);
 }
 
 async function getEntity(id) {
@@ -125,6 +150,14 @@ async function entityProfile(data, selfId = null) {
   }
   const yearEnd = data.year_end_month ? Number(data.year_end_month) : null;
   if (yearEnd !== null && !(Number.isInteger(yearEnd) && yearEnd >= 1 && yearEnd <= 12)) throw httpError(400, 'The financial year end is a month from 1 to 12');
+  let consolidationOf = null;
+  if (type === 'consolidation') {
+    consolidationOf = data.consolidation_of ? Number(data.consolidation_of) : null;
+    const holding = consolidationOf ? await getEntity(consolidationOf) : null;
+    if (!holding || holding.entity_type === 'consolidation') throw httpError(400, 'Choose the holding company this consolidated entity consolidates');
+    if (selfId && consolidationOf === selfId) throw httpError(400, 'A consolidated entity cannot consolidate itself');
+    parentId = null;
+  }
   let pct = parentId ? Number(data.ownership_pct ?? 100) : null;
   if (parentId && !(pct > 0 && pct <= 100)) throw httpError(400, 'Ownership must be between 0 and 100%');
   const labels = data.labels && typeof data.labels === 'object' ? data.labels : {};
@@ -136,11 +169,19 @@ async function entityProfile(data, selfId = null) {
     framework: clean(data.framework),
     main_currency: currency,
     year_end_month: yearEnd,
+    consolidation_of: consolidationOf,
     parent_id: parentId,
     ownership_pct: pct,
     labels_json: Object.keys(labels).length ? JSON.stringify(labels) : null,
     hide_json: hide.length ? JSON.stringify(hide) : null,
   };
+}
+
+/** An entity that holds its own books (not a consolidated entity): where invoices, assets and bank lines are booked. */
+async function requireOperatingEntity(id) {
+  const e = await requireEntity(id);
+  if (e.is_consolidation) throw httpError(400, `${e.name} is a consolidated entity: book this in one of the companies instead`);
+  return e;
 }
 
 async function createEntity({ code, name, ...profile }) {
@@ -151,10 +192,11 @@ async function createEntity({ code, name, ...profile }) {
   if (await db.get('SELECT 1 FROM entities WHERE code = ?', code)) throw httpError(400, `Entity ${code} already exists`);
   const p = await entityProfile(profile);
   const info = (await db.run(
-    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, year_end_month, parent_id, ownership_pct, labels_json, hide_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
+    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, year_end_month, consolidation_of, parent_id, ownership_pct, labels_json, hide_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.consolidation_of, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
   ));
+  await rebuildEntityMembers();
   return (await getEntity(Number(info.lastInsertRowid)));
 }
 
@@ -164,10 +206,11 @@ async function updateEntity(id, { name, ...profile }) {
   if (name !== undefined && !String(name).trim()) throw httpError(400, 'Entity name is required');
   const p = await entityProfile({ ...existing, ...profile }, existing.id);
   await db.run(
-    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, year_end_month = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
+    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, year_end_month = ?, consolidation_of = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
     name !== undefined ? String(name).trim() : existing.name,
-    p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
+    p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.consolidation_of, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
   );
+  await rebuildEntityMembers();
   return (await getEntity(existing.id));
 }
 
@@ -192,7 +235,7 @@ function decorateAccount(a) {
 async function listAccounts(entityId) {
   const E = entityOf(entityId);
   const rows = (await db.all(`SELECT a.*, COALESCE(SUM(l.debit), 0) AS total_debit, COALESCE(SUM(l.credit), 0) AS total_credit
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id = ?)
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        GROUP BY a.code ORDER BY a.code`, E, E));
   return rows.map((r) => ({ ...decorateAccount(r), balance: round2(r.total_debit - r.total_credit) }));
 }
@@ -422,6 +465,9 @@ async function assertPeriodOpen(date) {
 async function postJournal({ entity_id, journal_date, reference, description, source_type, source_id, lines }) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(journal_date || '')) throw httpError(400, 'Journal date is required');
   const entity = (await requireEntity(entity_id));
+  if (entity.is_consolidation && source_type !== 'manual') {
+    throw httpError(400, `${entity.name} is a consolidated entity: invoices, payments, assets and bank postings are booked in the companies themselves, only elimination journals are booked here`);
+  }
   const period = (await assertPeriodOpen(journal_date));
   const posted = lines
     .map((l) => ({ ...l, debit: round2(l.debit || 0), credit: round2(l.credit || 0) }))
@@ -549,7 +595,7 @@ async function listJournals(entityId) {
   const E = entityOf(entityId);
   return (await db.all(`SELECT j.*, e.code AS entity_code, COALESCE(SUM(l.debit), 0) AS total, COUNT(l.id) AS line_count
        FROM journals j JOIN entities e ON e.id = j.entity_id LEFT JOIN ledger_entries l ON l.journal_id = j.id
-       WHERE (?::int IS NULL OR j.entity_id = ?)
+       WHERE (?::int IS NULL OR j.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        GROUP BY j.id, e.code ORDER BY j.journal_date DESC, j.id DESC`, E, E))
     .map((j) => ({ ...j, total: round2(j.total) }));
 }
@@ -559,7 +605,7 @@ async function listLedgerEntries(entityId) {
   return (await db.all(`SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code, cp.code AS counterparty_code
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
        JOIN entities e ON e.id = l.entity_id LEFT JOIN entities cp ON cp.id = l.counterparty_entity_id
-       WHERE (?::int IS NULL OR l.entity_id = ?)
+       WHERE (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        ORDER BY l.entry_date, l.id`, E, E));
 }
 
@@ -567,7 +613,7 @@ async function trialBalance(entityId) {
   const E = entityOf(entityId);
   return (await db.all(`SELECT l.account_code, a.name AS account_name, a.category, SUM(l.debit) AS debit, SUM(l.credit) AS credit
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE (?::int IS NULL OR l.entity_id = ?)
+       WHERE (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        GROUP BY l.account_code, a.name, a.category ORDER BY l.account_code`, E, E))
     .map((r) => ({
       account_code: r.account_code,
@@ -592,7 +638,7 @@ const INVOICE_KIND = { purchase: 'supplier', sale: 'customer' };
  */
 async function createInvoice({ entity_id, type, party_id, invoice_number, invoice_date, due_date, currency, exchange_rate, notes, lines }) {
   if (!INVOICE_KIND[type]) throw httpError(400, 'Invoice type must be purchase or sale');
-  const entity = (await requireEntity(entity_id));
+  const entity = (await requireOperatingEntity(entity_id));
   const company = (await getCompany());
   const party = (await getParty(INVOICE_KIND[type], party_id));
   if (!party) throw httpError(400, `Unknown ${INVOICE_KIND[type]}`);
@@ -732,7 +778,7 @@ async function listInvoices(type, entityId) {
   const E = entityOf(entityId);
   return (
     await db.all(
-      invoiceSelect('WHERE (?::text IS NULL OR i.type = ?) AND (?::int IS NULL OR i.entity_id = ?) ORDER BY i.invoice_date DESC, i.id DESC'),
+      invoiceSelect('WHERE (?::text IS NULL OR i.type = ?) AND (?::int IS NULL OR i.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?)) ORDER BY i.invoice_date DESC, i.id DESC'),
       type || null,
       type || null,
       E,
@@ -916,7 +962,7 @@ async function financialStatements({ from, to, cost_center, entity_id, consolida
   const rows = (await db.all(`SELECT a.code, a.name, a.category,
          COALESCE(SUM(CASE WHEN ${OPENING_SQL} THEN l.debit - l.credit END), 0) AS opening,
          COALESCE(SUM(CASE WHEN ${MOVEMENT_SQL} THEN l.debit - l.credit END), 0) AS movement
-       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id = ?)
+       FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
          AND (?::int = 0 OR l.counterparty_entity_id IS NULL)
        LEFT JOIN journals j ON j.id = l.journal_id
        GROUP BY a.code ORDER BY a.code`, from, to, from, to, E, E, C))
@@ -941,7 +987,7 @@ async function financialStatements({ from, to, cost_center, entity_id, consolida
     const f = costCenterFilter(cost_center);
     const filtered = Object.fromEntries(
       (await db.all(`SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
-           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)
+           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
              AND (?::int = 0 OR l.counterparty_entity_id IS NULL)${f.sql} GROUP BY l.account_code`, from, to, E, E, C, ...f.params))
         .map((r) => [r.code, round2(r.movement)])
     );
@@ -1055,7 +1101,7 @@ async function costCenterReport({ from, to, entity_id, consolidated }) {
   const C = E === null && consolidated ? 1 : 0;
   const rows = (await db.all(`SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
-       WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)
+       WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
          AND (?::int = 0 OR l.counterparty_entity_id IS NULL)
        GROUP BY cc, a.category`, from, to, E, E, C));
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
@@ -1101,17 +1147,17 @@ async function kpis({ from, to, entity_id }) {
 
   // Invoiced amounts (incl. VAT, in GBP) for the period, to compare with AR/AP balances.
   const invoiced = async (type) =>
-    (await db.get('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ? AND (?::int IS NULL OR entity_id = ?)', type, from, to, E, E)).t;
+    (await db.get('SELECT COALESCE(SUM(base_total), 0) AS t FROM invoices WHERE type = ? AND invoice_date >= ? AND invoice_date <= ? AND (?::int IS NULL OR entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))', type, from, to, E, E)).t;
   const salesInvoiced = (await invoiced('sale'));
   const purchasesInvoiced = (await invoiced('purchase'));
 
   // Monthly trend
   const monthRows = (await db.all(`SELECT substr(l.entry_date, 1, 7) AS period, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id = ?)
+       WHERE ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        GROUP BY substr(l.entry_date, 1, 7), a.category`, from, to, E, E));
   const cashBefore = (await db.get(`SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       WHERE a.category = 'cash' AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id = ?)`, from, to, E, E)).t;
+       WHERE a.category = 'cash' AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))`, from, to, E, E)).t;
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
   const months = [];
   let runningCash = cashBefore;
@@ -1550,12 +1596,12 @@ async function accountDetail(code, { from, to, entity_id, cost_center }) {
   const sign = account.side === 'asset' || account.side === 'expense' ? 1 : -1;
   const opening = round2(
     (await db.get(`SELECT COALESCE(SUM(l.debit - l.credit), 0) AS t FROM ledger_entries l JOIN journals j ON j.id = l.journal_id
-         WHERE l.account_code = ? AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id = ?)${f.sql}`, code, from, to, E, E, ...f.params)).t
+         WHERE l.account_code = ? AND ${OPENING_SQL} AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))${f.sql}`, code, from, to, E, E, ...f.params)).t
   );
   const entries = (await db.all(`SELECT l.id, l.journal_id, l.entry_date, l.debit, l.credit, l.description, l.cost_center, l.fx_note,
               j.reference, j.source_type, e.code AS entity_code
        FROM ledger_entries l JOIN journals j ON j.id = l.journal_id JOIN entities e ON e.id = l.entity_id
-       WHERE l.account_code = ? AND ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id = ?)${f.sql}
+       WHERE l.account_code = ? AND ${MOVEMENT_SQL} AND (?::int IS NULL OR l.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))${f.sql}
        ORDER BY l.entry_date, l.id`, code, from, to, E, E, ...f.params));
   let running = opening;
   for (const e of entries) {
@@ -1617,7 +1663,7 @@ async function dashboardSummary(entityId) {
   const tbDebit = round2(tb.reduce((s, r) => s + r.debit, 0));
   const tbCredit = round2(tb.reduce((s, r) => s + r.credit, 0));
   const cash = round2(tb.filter((r) => r.category === 'cash').reduce((s, r) => s + r.balance, 0));
-  const realisedFx = (await db.get('SELECT COALESCE(SUM(p.fx_gain_loss), 0) AS t FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE (?::int IS NULL OR i.entity_id = ?)', E, E)).t;
+  const realisedFx = (await db.get('SELECT COALESCE(SUM(p.fx_gain_loss), 0) AS t FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE (?::int IS NULL OR i.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))', E, E)).t;
   return {
     company,
     entity: E ? (await getEntity(E)) : null,
@@ -1639,6 +1685,8 @@ module.exports = {
   listEntities,
   getEntity,
   requireEntity,
+  requireOperatingEntity,
+  rebuildEntityMembers,
   createEntity,
   updateEntity,
   ENTITY_TYPES,

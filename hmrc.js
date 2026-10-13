@@ -181,7 +181,7 @@ async function status(entityId, req) {
 /** Start signing in: returns the HMRC page the browser must go to. */
 async function connect({ entity_id, vrn }, req, user) {
   requireConfigured();
-  const entity = await acct.requireEntity(entity_id);
+  const entity = await acct.requireOperatingEntity(entity_id);
   vrn = cleanVrn(vrn);
   if (!/^\d{9}$/.test(vrn)) throw httpError(400, 'A VAT registration number has 9 digits');
   const state = crypto.randomBytes(24).toString('hex');

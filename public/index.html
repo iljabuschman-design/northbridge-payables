@@ -398,6 +398,7 @@
     <div class="panel-header wrap">
       <h2>Financial statements</h2>
       <form id="form-period" class="period-row period-form">
+        <label>Entity <select name="entity" id="fin-entity-select"></select></label>
         <label>From <select name="from"></select></label>
         <label>To <select name="to"></select></label>
         <label>P&amp;L for <select name="cost_center" id="fin-cc-select"></select></label>
@@ -913,10 +914,14 @@
     <div class="row">
       <label>Financial year ends in <select name="year_end_month"></select></label>
     </div>
-    <div class="row">
+    <div class="row" id="entity-owner-row">
       <label style="flex:2">Owned by <select name="parent_id"></select></label>
       <label>Ownership % <input name="ownership_pct" type="number" min="1" max="100" step="0.01" value="100" /></label>
     </div>
+    <div class="row" id="entity-consolidates-row" hidden>
+      <label style="flex:2">Consolidates the group of <select name="consolidation_of"></select></label>
+    </div>
+    <p class="hint" id="entity-consolidates-hint" hidden>A consolidated entity adds up the books of that holding company and every company below it. Intercompany eliminations are booked here as journals; nothing else is booked in it.</p>
     <div class="section-title">Names in this company's statements <span class="muted">(leave empty for the standard name)</span></div>
     <div class="row">
       <label>Revenue <input name="label_revenue" maxlength="60" /></label>

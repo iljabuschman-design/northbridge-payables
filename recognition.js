@@ -395,7 +395,7 @@ async function forgetProfile(supplierId) {
  *   pdf_base64: the file; lines: its text in reading order (from pdf.js in the browser).
  */
 async function recognise({ document_id, filename, pdf_base64, lines, items, entity_id }, user) {
-  const entity = await acct.requireEntity(entity_id);
+  const entity = await acct.requireOperatingEntity(entity_id);
   // A document already stored (e.g. from the email inbox) is recognised in place.
   const existing = document_id ? await db.get('SELECT id, filename, data FROM documents WHERE id = ?', Number(document_id)) : null;
   if (document_id && !existing) throw httpError(404, 'Document not found');

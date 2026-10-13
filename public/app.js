@@ -76,9 +76,11 @@ const entityName = (id) => ((META.entities || []).find((e) => String(e.id) === S
 const entityCode = (id) => ((META.entities || []).find((e) => String(e.id) === String(id)) || {}).code || '';
 
 /** Fill an entity select in a form; defaults to the entity chosen in the top bar. */
-function fillEntityField(select, selected) {
-  const value = String(selected || CURRENT_ENTITY || (META.entities[0] || {}).id);
-  select.innerHTML = META.entities.map((e) => `<option value="${e.id}" ${String(e.id) === value ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+function fillEntityField(select, selected, allowConsolidated = false) {
+  const list = META.entities.filter((e) => allowConsolidated || !e.is_consolidation);
+  let value = String(selected || CURRENT_ENTITY || '');
+  if (!list.some((e) => String(e.id) === value)) value = String((list[0] || {}).id);
+  select.innerHTML = list.map((e) => `<option value="${e.id}" ${String(e.id) === value ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
 }
 
 function updateEntityNotes() {
@@ -385,7 +387,11 @@ const INVOICE_STATUS_FILTERS = [
 ];
 
 function invoiceMatches(i, f) {
-  if (f.entity && String(i.entity_id) !== String(f.entity)) return false;
+  if (f.entity) {
+    const e = META.entities.find((x) => String(x.id) === String(f.entity));
+    const ids = e && e.members && e.members.length ? [e.id, ...e.members] : [Number(f.entity)];
+    if (!ids.includes(i.entity_id)) return false;
+  }
   if (f.party && String(i.party_id) !== String(f.party)) return false;
   if (f.currency && i.currency !== f.currency) return false;
   if (f.from && i.invoice_date < f.from) return false;
@@ -1182,7 +1188,7 @@ async function openJournalForm(journal = null) {
   await Promise.all([loadAccounts(), loadCostCenters()]);
   editingJournal = journal;
   journalForm.reset();
-  fillEntityField(journalForm.entity_id, journal ? journal.entity_id : null);
+  fillEntityField(journalForm.entity_id, journal ? journal.entity_id : null, true);
   journalForm.entity_id.disabled = !!journal;
   journalForm.currency.innerHTML = currencyOptions(BASE);
   journalForm.currency.disabled = !!journal;
@@ -1328,9 +1334,17 @@ periodForm.addEventListener('submit', (e) => {
   loadFinancials();
 });
 document.getElementById('fin-consolidated').addEventListener('change', () => loadFinancials());
+document.getElementById('fin-entity-select').addEventListener('change', (e) => {
+  FIN_ENTITY = e.target.value;
+  loadFinancials();
+});
 document.getElementById('fin-detail').addEventListener('change', () => {
   document.getElementById('view-financials').classList.toggle('hide-detail', !document.getElementById('fin-detail').checked);
 });
+
+// The entity chosen on the Financials page ('' = all) and the top-bar value it started from.
+let FIN_ENTITY = '';
+let FIN_TOPBAR;
 
 // The company shown on Financials: its own names for statement lines and the lines it leaves out.
 let FIN_PROFILE = { labels: {}, hide: [] };
@@ -1359,15 +1373,33 @@ async function loadFinancials() {
     '<option value="none">Unallocated</option>';
   ccSel.value = ccPrev;
   const { from, to } = periodRange(periodForm);
+  // The entity shown here starts from the top bar and can be changed on the page itself.
+  const entitySel = periodForm.entity;
+  if (FIN_TOPBAR !== CURRENT_ENTITY) {
+    FIN_ENTITY = CURRENT_ENTITY;
+    FIN_TOPBAR = CURRENT_ENTITY;
+  }
+  entitySel.innerHTML =
+    '<option value="">All entities (group)</option>' +
+    META.entities.filter((e) => !e.is_consolidation).map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('') +
+    META.entities.filter((e) => e.is_consolidation).map((e) => `<option value="${e.id}">Consolidated: ${esc(e.name.replace(/ - Consolidated$/, ''))}</option>`).join('');
+  entitySel.value = FIN_ENTITY;
   const consolidatedWrap = document.getElementById('fin-consolidated-wrap');
-  consolidatedWrap.hidden = CURRENT_ENTITY !== '';
-  const consolidated = CURRENT_ENTITY === '' && document.getElementById('fin-consolidated').checked;
+  consolidatedWrap.hidden = FIN_ENTITY !== '';
+  const consolidated = FIN_ENTITY === '' && document.getElementById('fin-consolidated').checked;
+  const scope = `&entity=${FIN_ENTITY === '' ? 'all' : FIN_ENTITY}`;
+  const finEntity = META.entities.find((e) => String(e.id) === String(FIN_ENTITY));
+  document.querySelector('#view-financials .entity-note').textContent = !finEntity
+    ? 'Showing all companies of the group added together; tick "Eliminate intercompany" to leave out what the companies book with each other.'
+    : finEntity.is_consolidation
+      ? `Consolidated: the books of ${finEntity.members.map((m) => entityCode(m)).join(', ')} added together, plus the elimination journals booked in ${finEntity.code}.`
+      : `Showing ${finEntity.name}.`;
   let r;
   let ccr;
   try {
     [r, ccr] = await Promise.all([
-      api(`/api/reports?from=${from}&to=${to}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}${consolidated ? '&consolidated=1' : ''}`),
-      api(`/api/reports/cost-centers?from=${from}&to=${to}${consolidated ? '&consolidated=1' : ''}`),
+      api(`/api/reports?from=${from}&to=${to}${scope}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}${consolidated ? '&consolidated=1' : ''}`),
+      api(`/api/reports/cost-centers?from=${from}&to=${to}${scope}${consolidated ? '&consolidated=1' : ''}`),
     ]);
   } catch (err) {
     document.getElementById('pl-period').textContent = err.message;
@@ -1480,7 +1512,13 @@ function renderEntities() {
         <td>${esc(e.country || '')}${e.main_currency ? ` <span class="muted">· ${esc(e.main_currency)}</span>` : ''}</td>
         <td>${esc(e.framework || '')}</td>
         <td class="nowrap">${e.year_end_month ? esc(financialYearText(e.year_end_month)) : ''}</td>
-        <td>${parent ? `${esc(parent.code)} <span class="muted">${e.ownership_pct}%</span>` : '<span class="muted">Top of the group</span>'}</td>
+        <td>${
+          e.is_consolidation
+            ? `<span class="muted">Consolidates</span> ${esc((e.members || []).map((m) => entityCode(m)).join(', '))}`
+            : parent
+              ? `${esc(parent.code)} <span class="muted">${e.ownership_pct}%</span>`
+              : '<span class="muted">Top of the group</span>'
+        }</td>
         <td class="num" title="${esc(own.map((a) => accountLabel(a)).join('\n'))}">${own.length}</td>
         <td class="muted" title="${esc(labelText)}">${labels.length ? `${labels.length} renamed${(e.hide || []).length ? `, ${(e.hide || []).length} hidden when empty` : ''}` : 'Standard'}</td>
         <td class="nowrap"><button class="btn btn-small admin-only" data-edit-entity="${e.id}">Edit</button></td>
@@ -1504,8 +1542,13 @@ function openEntityDialog(entity) {
     META.entities.filter((e) => !entity || e.id !== entity.id).map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('');
   entityForm.year_end_month.innerHTML =
     '<option value="">Not set</option>' + MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m} (year runs ${financialYearText(i + 1)})</option>`).join('');
+  entityForm.consolidation_of.innerHTML = META.entities
+    .filter((e) => !e.is_consolidation && (!entity || e.id !== entity.id))
+    .map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`)
+    .join('');
   entityForm.code.disabled = !!entity;
   if (entity) {
+    entityForm.consolidation_of.value = entity.consolidation_of || '';
     entityForm.year_end_month.value = entity.year_end_month || '';
     entityForm.code.value = entity.code;
     entityForm.name.value = entity.name;
@@ -1516,10 +1559,20 @@ function openEntityDialog(entity) {
     entityForm.ownership_pct.value = entity.ownership_pct || 100;
     for (const k of LABEL_FIELDS) entityForm[`label_${k}`].value = (entity.labels || {})[k] || '';
   }
+  syncEntityTypeFields();
   document.getElementById('dialog-entity').showModal();
 }
 
 document.getElementById('btn-new-entity').addEventListener('click', () => openEntityDialog(null));
+
+// A consolidated entity has no owner or ownership percentage: it consolidates a holding company's group.
+function syncEntityTypeFields() {
+  const cons = entityForm.entity_type.value === 'consolidation';
+  document.getElementById('entity-owner-row').hidden = cons;
+  document.getElementById('entity-consolidates-row').hidden = !cons;
+  document.getElementById('entity-consolidates-hint').hidden = !cons;
+}
+entityForm.entity_type.addEventListener('change', syncEntityTypeFields);
 
 entityForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1538,6 +1591,7 @@ entityForm.addEventListener('submit', async (e) => {
     main_currency: entityForm.main_currency.value,
     year_end_month: entityForm.year_end_month.value || null,
     parent_id: entityForm.parent_id.value || null,
+    consolidation_of: entityForm.entity_type.value === 'consolidation' ? entityForm.consolidation_of.value || null : null,
     ownership_pct: Number(entityForm.ownership_pct.value) || 100,
     labels,
     hide: editingEntity ? editingEntity.hide || [] : [],

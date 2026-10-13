@@ -113,7 +113,7 @@ async function importStatement({ filename, content, bank_account, entity_id }) {
         throw httpError(400, `Choose the bank ledger account for this statement${st.iban ? ` (IBAN ${st.iban})` : ''}`);
       }
       // A bank account belonging to one entity decides the entity; a shared one needs it chosen.
-      const entity = (await acct.requireEntity(bank.entity_id || acct.entityOf(entity_id)));
+      const entity = (await acct.requireOperatingEntity(bank.entity_id || acct.entityOf(entity_id)));
       const ccy = st.currency || st.entries.find((e) => e.currency)?.currency || bank.bank_currency;
       if (ccy !== bank.bank_currency) {
         throw httpError(400, `Statement is in ${ccy} but ${bank.code} ${bank.name} is a ${bank.bank_currency} account`);
@@ -160,7 +160,7 @@ async function listStatements(entityId) {
               SUM(CASE WHEN l.journal_id IS NULL THEN 1 ELSE 0 END) AS open_lines
        FROM bank_statements s JOIN accounts a ON a.code = s.bank_account JOIN entities e ON e.id = s.entity_id
        LEFT JOIN bank_statement_lines l ON l.statement_id = s.id
-       WHERE (?::int IS NULL OR s.entity_id = ?)
+       WHERE (?::int IS NULL OR s.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?))
        GROUP BY s.id, a.name, e.code ORDER BY s.uploaded_at DESC, s.id DESC`, E, E));
 }
 

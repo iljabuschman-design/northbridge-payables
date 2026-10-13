@@ -71,7 +71,7 @@ function decorate(row) {
 
 async function listAssets(entityId) {
   const E = acct.entityOf(entityId);
-  return (await db.all(`${ASSET_SELECT} WHERE (?::int IS NULL OR a.entity_id = ?) ORDER BY a.asset_number`, E, E)).map(decorate);
+  return (await db.all(`${ASSET_SELECT} WHERE (?::int IS NULL OR a.entity_id IN (SELECT member_id FROM entity_members WHERE entity_id = ?)) ORDER BY a.asset_number`, E, E)).map(decorate);
 }
 
 async function getAsset(id) {
@@ -114,7 +114,7 @@ async function nextAssetNumber() {
  * earlier books (depreciation already booked before this system).
  */
 async function createAsset(data) {
-  const entity = (await acct.requireEntity(data.entity_id));
+  const entity = (await acct.requireOperatingEntity(data.entity_id));
   const name = String(data.name || '').trim();
   if (!name) throw httpError(400, 'Asset name is required');
   if (!ASSET_TYPES[data.asset_type]) throw httpError(400, 'Asset type must be machinery or inventory');
