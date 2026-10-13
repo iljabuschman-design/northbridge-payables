@@ -14,6 +14,7 @@ const reimb = require('./reimbursements');
 const mailbox = require('./mailbox');
 const vat = require('./vat');
 const intercompany = require('./intercompany');
+const ledgerImport = require('./ledger-import');
 const hmrc = require('./hmrc');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
@@ -321,6 +322,7 @@ const routes = [
     },
   },
   { method: 'GET', pattern: /^\/api\/ledger$/, handler: async (req, m, q) => acct.listLedgerEntries(q.get('entity')) },
+  { method: 'POST', pattern: /^\/api\/ledger\/import$/, handler: json((body) => ledgerImport.importLedger(body)) },
   { method: 'GET', pattern: /^\/api\/trial-balance$/, handler: async (req, m, q) => acct.trialBalance(q.get('entity')) },
   { method: 'GET', pattern: /^\/api\/dashboard$/, handler: async (req, m, q) => acct.dashboardSummary(q.get('entity')) },
   {

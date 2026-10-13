@@ -1333,6 +1333,176 @@ async function loadLedger() {
       .join('') + `<tr class="total"><td>Total</td><td class="num">${fmt(totDr)}</td><td class="num">${fmt(totCr)}</td><td class="num">${fmt(totDr - totCr)}</td></tr>`;
 }
 
+// ---------- Ledger CSV import ----------
+
+const importDialog = document.getElementById('dialog-ledger-import');
+const importForm = document.getElementById('form-ledger-import');
+const importStatus = document.getElementById('ledger-import-status');
+const importErrors = document.getElementById('ledger-import-errors');
+const IMPORT_COLUMNS = {
+  journal: ['journal', 'journal_id', 'journal_no', 'journal_number', 'batch', 'transaction', 'transaction_id'],
+  date: ['date', 'entry_date', 'journal_date', 'posting_date'],
+  entity: ['entity', 'entity_code', 'company'],
+  account: ['account', 'account_code', 'ledger', 'ledger_account', 'gl_account'],
+  description: ['description', 'text', 'narrative', 'memo'],
+  debit: ['debit', 'dr'],
+  credit: ['credit', 'cr'],
+  cost_center: ['cost_centre', 'cost_center', 'costcentre', 'costcenter', 'cc'],
+  reference: ['reference', 'ref'],
+  currency: ['currency', 'ccy'],
+  rate: ['rate', 'exchange_rate', 'fx_rate'],
+};
+const IMPORT_BATCH_ROWS = 400;
+
+/** RFC 4180 style parser (quotes, embedded separators/newlines); the separator is , or ; (whichever the header uses). */
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0];
+  const sep = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  let line = 1;
+  let rowLine = 1;
+  const endRow = () => {
+    row.push(field);
+    field = '';
+    if (row.some((c) => c.trim() !== '')) rows.push({ line: rowLine, cells: row });
+    row = [];
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else { if (c === '\n') line++; field += c; }
+    } else if (c === '"') quoted = true;
+    else if (c === sep) { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      endRow();
+      line++;
+      rowLine = line;
+    } else field += c;
+  }
+  if (field !== '' || row.length) endRow();
+  return rows;
+}
+
+function csvDate(v) {
+  const s = String(v || '').trim();
+  const m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : s.slice(0, 10);
+}
+
+/** Turn the file's text into row objects (with their line numbers in the file). Throws on a bad header. */
+function ledgerRowsFromCsv(text) {
+  const parsed = parseCsv(text);
+  if (parsed.length < 2) throw new Error('The file has no data rows');
+  const header = parsed[0].cells.map((h) => h.trim().toLowerCase().replace(/[\s-]+/g, '_'));
+  const col = {};
+  for (const [key, names] of Object.entries(IMPORT_COLUMNS)) col[key] = header.findIndex((h) => names.includes(h));
+  const missing = ['journal', 'date', 'account'].filter((k) => col[k] < 0);
+  if (col.debit < 0 && col.credit < 0) missing.push('debit/credit');
+  if (missing.length) throw new Error(`Missing column(s): ${missing.join(', ')}. Found: ${header.join(', ')}`);
+  return parsed.slice(1).map(({ line, cells }) => {
+    const get = (k) => (col[k] >= 0 ? (cells[col[k]] || '').trim() : '');
+    return {
+      line,
+      journal: get('journal'),
+      date: csvDate(get('date')),
+      entity: get('entity'),
+      account: get('account'),
+      description: get('description'),
+      debit: get('debit'),
+      credit: get('credit'),
+      cost_center: get('cost_center'),
+      reference: get('reference'),
+      currency: get('currency'),
+      rate: get('rate'),
+    };
+  });
+}
+
+/** Split rows into batches of whole journals (a journal never spans two requests). */
+function importBatches(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const k = `${r.entity}|${r.journal}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  const batches = [];
+  let cur = [];
+  for (const g of groups.values()) {
+    if (cur.length && cur.length + g.length > IMPORT_BATCH_ROWS) { batches.push(cur); cur = []; }
+    cur = cur.concat(g);
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+document.getElementById('btn-import-ledger').addEventListener('click', () => {
+  fillEntityField(importForm.entity_id, null, false);
+  importForm.file.value = '';
+  importStatus.textContent = '';
+  importErrors.innerHTML = '';
+  importDialog.showModal();
+});
+
+document.getElementById('ledger-import-template').addEventListener('click', (e) => {
+  e.preventDefault();
+  const csv = 'journal,date,entity,account,description,debit,credit,cost_centre,reference\n'
+    + 'J1,2026-01-31,,6100,January salaries,5000.00,,,PAY-01\n'
+    + 'J1,2026-01-31,,1000,January salaries,,5000.00,,PAY-01\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'ledger-import-template.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+importForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const go = document.getElementById('btn-ledger-import-go');
+  importErrors.innerHTML = '';
+  go.disabled = true;
+  try {
+    const file = importForm.file.files[0];
+    if (!file) throw new Error('Choose a CSV file');
+    const rows = ledgerRowsFromCsv(await file.text());
+    const batches = importBatches(rows);
+    const entity_id = importForm.entity_id.value;
+    const errors = [];
+    let journals = 0;
+    // Pass 1: check everything without booking. Pass 2: book it.
+    for (const dry_run of [true, false]) {
+      let done = 0;
+      for (const batch of batches) {
+        importStatus.textContent = `${dry_run ? 'Checking' : 'Importing'} ${done} of ${rows.length} rows...`;
+        const res = await post('/api/ledger/import', { rows: batch, dry_run, entity_id });
+        if (dry_run) { errors.push(...res.errors); journals += res.journals; }
+        done += batch.length;
+      }
+      if (dry_run && errors.length) {
+        errors.sort((a, b) => a.line - b.line);
+        importErrors.innerHTML = errors.slice(0, 100).map((x) => `<li>${esc(x.message)}</li>`).join('')
+          + (errors.length > 100 ? `<li>...and ${errors.length - 100} more</li>` : '');
+        importStatus.textContent = `Nothing was imported: ${errors.length} problem(s) found in ${rows.length} rows. Fix the file and try again.`;
+        return;
+      }
+    }
+    importStatus.textContent = `Imported ${rows.length} lines in ${journals} journals.`;
+    refreshActive();
+  } catch (err) {
+    importStatus.textContent = '';
+    importErrors.innerHTML = `<li>${esc(err.message)}</li>`;
+  } finally {
+    go.disabled = false;
+  }
+});
+
 // ---------- Financial statements ----------
 
 const periodForm = document.getElementById('form-period');

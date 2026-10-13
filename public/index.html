@@ -306,6 +306,7 @@
   <section id="view-ledger" class="view" hidden>
     <div class="panel-header">
       <h2>General ledger — all entries</h2>
+      <button class="btn" id="btn-import-ledger">Import CSV</button>
     </div>
     <p class="hint">Click an account to see its overview, a line to open its journal, or <strong>Edit</strong> to change the entry.</p>
     <div class="table-wrap">
@@ -932,6 +933,27 @@
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Post journal</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Ledger CSV import -->
+<dialog id="dialog-ledger-import" class="wide">
+  <form id="form-ledger-import" class="form">
+    <h2>Import ledger entries from CSV</h2>
+    <p class="hint">One row per ledger line. Rows with the same <strong>journal</strong> value form one journal and must balance. Columns (first row = headers):
+      <code>journal, date, account, debit, credit</code> are required; optional: <code>entity</code> (entity code), <code>description</code>, <code>cost_centre</code>, <code>reference</code>, <code>currency</code>, <code>rate</code>.
+      Dates as YYYY-MM-DD or DD/MM/YYYY. Semicolon- or comma-separated. The whole file is checked first; nothing is booked unless every row is valid.</p>
+    <div class="row">
+      <label>Default entity (when there is no entity column) <select name="entity_id" class="entity-field"></select></label>
+      <label>CSV file <input type="file" name="file" accept=".csv,text/csv,text/plain" required /></label>
+    </div>
+    <p class="hint"><a href="#" id="ledger-import-template">Download a template</a></p>
+    <p class="hint" id="ledger-import-status"></p>
+    <ul class="error" id="ledger-import-errors" style="margin:0;padding-left:18px;max-height:200px;overflow:auto;"></ul>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Close</button>
+      <button type="submit" class="btn btn-primary" id="btn-ledger-import-go">Check &amp; import</button>
     </div>
   </form>
 </dialog>
