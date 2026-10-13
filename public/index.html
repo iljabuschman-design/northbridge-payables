@@ -445,9 +445,30 @@
       <div id="structure-chart" class="org-wrap"></div>
     </div>
     <div class="panel" style="margin-top:16px;">
-      <h2>Relations between companies</h2>
-      <p class="hint">Every pair of companies that book transactions with each other (all periods). The relation shows whether they are also linked by ownership; the figures are what they charged each other and what is still outstanding. Click a row to reconcile it on the Intercompany page.</p>
-      <div class="table-wrap"><table class="table" id="structure-relations-table"></table></div>
+      <h2>Companies</h2>
+      <p class="hint">Click a company to see its address, registration and tax details.</p>
+      <div class="table-wrap"><table class="table" id="structure-entities-table"></table></div>
+    </div>
+  </section>
+
+  <!-- One company: address, registration, tax -->
+  <section id="view-entity" class="view" hidden>
+    <div class="panel">
+      <div class="panel-header wrap">
+        <div>
+          <a href="#structure" class="back-link">← Group overview</a>
+          <h2 id="entity-title"></h2>
+        </div>
+        <div class="header-actions">
+          <button type="button" class="btn" id="btn-entity-financials">Open financials</button>
+          <button type="button" class="btn btn-primary admin-only" id="btn-entity-edit">Edit details</button>
+        </div>
+      </div>
+      <div id="entity-detail"></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Bank accounts</h2>
+      <div class="table-wrap"><table class="table" id="entity-banks-table"></table></div>
     </div>
   </section>
 
@@ -910,6 +931,43 @@
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Post journal</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Company details: address, registration, tax -->
+<dialog id="dialog-entity-details">
+  <form id="form-entity-details" class="form">
+    <h2 id="entity-details-title">Company details</h2>
+    <div class="section-title">Address</div>
+    <label>Address line 1 <input name="address_line1" maxlength="100" /></label>
+    <label>Address line 2 <input name="address_line2" maxlength="100" /></label>
+    <div class="row">
+      <label>Postal code <input name="postal_code" maxlength="20" /></label>
+      <label style="flex:2">City <input name="city" maxlength="60" /></label>
+    </div>
+    <div class="row">
+      <label>Region / state <input name="region" maxlength="60" /></label>
+      <label>Country <input name="country" maxlength="60" /></label>
+    </div>
+    <div class="section-title">Registration and tax</div>
+    <label>Chamber of Commerce / company registration number <input name="registration_number" maxlength="40" /></label>
+    <div class="row">
+      <label>VAT number <input name="vat_number" maxlength="30" /></label>
+      <label>Tax number (TIN) <input name="tax_number" maxlength="30" /></label>
+    </div>
+    <label>Date of incorporation <input name="incorporation_date" type="date" /></label>
+    <div class="section-title">Contact and notes</div>
+    <div class="row">
+      <label>E-mail <input name="email" type="email" maxlength="100" /></label>
+      <label>Phone <input name="phone" maxlength="40" /></label>
+    </div>
+    <label>Directors <textarea name="directors" rows="2" maxlength="400" placeholder="One per line"></textarea></label>
+    <label>Notes <textarea name="notes" rows="2" maxlength="600"></textarea></label>
+    <p class="error" id="entity-details-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save details</button>
     </div>
   </form>
 </dialog>

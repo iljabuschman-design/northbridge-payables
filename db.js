@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS entities (
   main_currency TEXT,
   -- Last month of the financial year (12 = the year runs January to December).
   year_end_month INTEGER,
+  -- Company details (address, registration numbers, contact), see ENTITY_DETAIL_FIELDS in accounting.js.
+  address_line1 TEXT,
+  address_line2 TEXT,
+  postal_code TEXT,
+  city TEXT,
+  region TEXT,
+  registration_number TEXT,
+  vat_number TEXT,
+  tax_number TEXT,
+  incorporation_date TEXT,
+  email TEXT,
+  phone TEXT,
+  directors TEXT,
+  notes TEXT,
   -- A consolidated entity: the holding company whose group it consolidates (see entity_members).
   consolidation_of INTEGER REFERENCES entities(id),
   parent_id INTEGER REFERENCES entities(id),
@@ -449,6 +463,8 @@ const TABLES = [
   'fixed_assets', 'asset_depreciation', 'vat_returns', 'vat_codes', 'reimbursements', 'merchant_profiles', 'documents', 'vendor_profiles', 'deletions', 'mailbox_state', 'users', 'sessions', 'hmrc_connections', 'hmrc_oauth_states', 'schema_meta',
 ];
 
+const ENTITY_DETAIL_COLUMNS = ['address_line1', 'address_line2', 'postal_code', 'city', 'region', 'registration_number', 'vat_number', 'tax_number', 'incorporation_date', 'email', 'phone', 'directors', 'notes'];
+
 const txStore = new AsyncLocalStorage();
 const USE_POSTGRES = Boolean(process.env.DATABASE_URL || process.env.POSTGRES_URL);
 let driver;
@@ -629,6 +645,8 @@ function init() {
       for (const stmt of driver.ddl(SCHEMA.replace(/--.*$/gm, '')).split(';').map((x) => x.trim()).filter(Boolean)) {
         await db.exec(stmt);
       }
+      // Columns added later without a rebuild (keeps the data of existing databases).
+      for (const col of ENTITY_DETAIL_COLUMNS) await db.addColumn('entities', col, 'TEXT');
       if (!row || row.version < SCHEMA_VERSION) {
         await db.exec(`DELETE FROM schema_meta`);
         await db.run('INSERT INTO schema_meta (id, version) VALUES (1, ?)', SCHEMA_VERSION);

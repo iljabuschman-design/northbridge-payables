@@ -266,6 +266,12 @@ function showTab(name) {
     loadAccountView(code).catch((err) => console.error(err));
     return;
   }
+  if (name.startsWith('entity/')) {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== 'view-entity'));
+    loadEntityView(Number(name.slice(7))).catch((err) => console.error(err));
+    return;
+  }
   if (!document.getElementById(`view-${name}`)) name = 'suppliers';
   if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
   document.querySelectorAll('.tab[data-tab]').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -1623,7 +1629,7 @@ function orgCard(e, ownedPct) {
 }
 
 async function loadStructure() {
-  const [entities, ic] = await Promise.all([api('/api/entities'), api('/api/intercompany?from=2000-01-01&to=2099-12-31')]);
+  const entities = await api('/api/entities');
   META.entities = entities;
   const byId = Object.fromEntries(entities.map((e) => [e.id, e]));
   const operating = entities.filter((e) => !e.is_consolidation);
@@ -1652,6 +1658,7 @@ async function loadStructure() {
       : '',
   ].join('');
   document.getElementById('structure-chart').innerHTML = chart;
+  // The chart opens a company's financials; the list below opens its details.
   document.querySelectorAll('#structure-chart [data-open-entity]').forEach((el) =>
     el.addEventListener('click', () => {
       CURRENT_ENTITY = el.dataset.openEntity;
@@ -1665,48 +1672,134 @@ async function loadStructure() {
     })
   );
 
-  // ----- Relations between companies: ownership and intercompany activity -----
-  const ownership = (a, b) => {
-    if (a.parent_id === b.id) return `${a.code} is ${a.ownership_pct}% owned by ${b.code}`;
-    if (b.parent_id === a.id) return `${b.code} is ${b.ownership_pct}% owned by ${a.code}`;
-    // Same holding group, no direct link
-    const rootOf = (e) => {
-      let x = e;
-      while (x.parent_id && byId[x.parent_id]) x = byId[x.parent_id];
-      return x;
-    };
-    return rootOf(a).id === rootOf(b).id ? 'Same group (not directly owned)' : 'No ownership link';
-  };
-  const rows = ic.pairs.map((p) => {
-    const a = byId[p.a_id];
-    const b = byId[p.b_id];
-    const flow = p.pl.filter((g) => g.key === 'operating').reduce((t, g) => t + Math.max(g.income, g.expense), 0);
-    const interest = p.pl.filter((g) => g.key === 'financing').reduce((t, g) => t + Math.max(g.income, g.expense), 0);
-    const loans = p.bs.filter((g) => g.key === 'loans').reduce((t, g) => t + Math.abs(g.a), 0);
-    const trade = p.bs.filter((g) => g.key === 'trade').reduce((t, g) => t + g.a, 0);
-    return { p, a, b, flow, interest, loans, trade, relation: ownership(a, b) };
-  });
-  const linked = rows.filter((r) => /owned by/.test(r.relation)).length;
-  const bad = rows.filter((r) => !r.p.ok).length;
+  const countries = new Set(operating.map((e) => e.country).filter(Boolean));
   document.getElementById('structure-summary').innerHTML = `
     <div class="card"><div class="label">Companies</div><div class="value">${operating.length}</div><div class="sub">${entities.length - operating.length} consolidated entities</div></div>
     <div class="card"><div class="label">Groups</div><div class="value">${groups.length}</div><div class="sub">${loners.length} independent compan${loners.length === 1 ? 'y' : 'ies'}</div></div>
-    <div class="card"><div class="label">Intercompany relations</div><div class="value">${rows.length}</div><div class="sub">${linked} also linked by ownership</div></div>
-    <div class="card"><div class="label">Not reconciled</div><div class="value ${bad ? 'neg' : 'pos'}">${bad}</div><div class="sub">relations with differences</div></div>`;
-  document.getElementById('structure-relations-table').innerHTML =
-    `<thead><tr><th>Company A</th><th>Company B</th><th>Ownership</th><th class="num">Charged between them</th><th class="num">Interest</th><th class="num">Loans outstanding</th><th class="num">Trade balance (A)</th><th>Reconciliation</th></tr></thead><tbody>` +
-    (rows
+    <div class="card"><div class="label">Countries</div><div class="value">${countries.size}</div><div class="sub">${esc([...countries].join(', '))}</div></div>
+    <div class="card"><div class="label">Financial year ends</div><div class="value">${new Set(operating.map((e) => e.year_end_month).filter(Boolean)).size}</div><div class="sub">different year ends</div></div>`;
+
+  const ownerText = (e) =>
+    e.is_consolidation
+      ? `Consolidates ${(e.members || []).map((m) => entityCode(m)).join(', ')}`
+      : e.parent_id && byId[e.parent_id]
+        ? `${byId[e.parent_id].code} (${e.ownership_pct}%)`
+        : '';
+  document.getElementById('structure-entities-table').innerHTML =
+    `<thead><tr><th>Code</th><th>Company</th><th>Type</th><th>Country</th><th>City</th><th>Registration no.</th><th>VAT number</th><th>Owned by</th><th>Financial year</th></tr></thead><tbody>` +
+    entities
       .map(
-        (r) => `<tr class="clickable" data-go-ic="1">
-          <td><span class="entity-tag">${esc(r.a.code)}</span> ${esc(r.a.name)}</td><td><span class="entity-tag">${esc(r.b.code)}</span> ${esc(r.b.name)}</td>
-          <td class="${/owned by/.test(r.relation) ? '' : 'muted'}">${esc(r.relation)}</td>
-          <td class="num">${fmt(r.flow, BASE)}</td><td class="num">${r.interest ? fmt(r.interest, BASE) : ''}</td><td class="num">${r.loans ? fmt(r.loans, BASE) : ''}</td><td class="num">${fmt(r.trade, BASE)}</td>
-          <td>${r.p.ok ? '<span class="badge paid">✓ Agrees</span>' : `<span class="badge bad">✗ Difference</span>`}</td></tr>`
+        (e) => `<tr class="clickable" data-entity-row="${e.id}">
+          <td><span class="entity-tag">${esc(e.code)}</span></td><td><strong>${esc(e.name)}</strong></td><td>${esc(e.type_name || '')}</td>
+          <td>${esc(e.country || '')}</td><td>${esc(e.city || '')}</td><td>${esc(e.registration_number || '')}</td><td>${esc(e.vat_number || '')}</td>
+          <td class="muted">${esc(ownerText(e))}</td><td class="nowrap">${e.year_end_month ? esc(financialYearText(e.year_end_month)) : ''}</td></tr>`
       )
-      .join('') || '<tr><td colspan="8" class="hint">No intercompany activity yet.</td></tr>') +
+      .join('') +
     '</tbody>';
-  document.querySelectorAll('#structure-relations-table tr[data-go-ic]').forEach((tr) => tr.addEventListener('click', () => (location.hash = '#intercompany')));
+  document.querySelectorAll('#structure-entities-table tr[data-entity-row]').forEach((tr) =>
+    tr.addEventListener('click', () => (location.hash = `#entity/${tr.dataset.entityRow}`))
+  );
 }
+
+// ----- One company: address, registration and tax details -----
+
+let ENTITY_VIEW = null;
+
+async function loadEntityView(id) {
+  const [entities, accounts] = await Promise.all([api('/api/entities'), api(`/api/accounts?entity=${Number(id)}`)]);
+  META.entities = entities;
+  const e = entities.find((x) => x.id === Number(id));
+  if (!e) {
+    document.getElementById('entity-title').textContent = 'Company not found';
+    document.getElementById('entity-detail').innerHTML = '<p class="hint">This company does not exist.</p>';
+    return;
+  }
+  ENTITY_VIEW = e;
+  const byId = Object.fromEntries(entities.map((x) => [x.id, x]));
+  const link = (x) => `<a href="#entity/${x.id}"><span class="entity-tag">${esc(x.code)}</span> ${esc(x.name)}</a>`;
+  const subs = entities.filter((x) => x.parent_id === e.id);
+  const inCons = entities.filter((c) => c.is_consolidation && (c.members || []).includes(e.id) && c.id !== e.id);
+  const val = (v) => (v ? esc(v) : '<span class="muted">not set</span>');
+  const address = [e.address_line1, e.address_line2, [e.postal_code, e.city].filter(Boolean).join(' '), e.region, e.country].filter(Boolean);
+  document.getElementById('entity-title').innerHTML = `<span class="entity-tag">${esc(e.code)}</span> ${esc(e.name)} <span class="badge partial">${esc(e.type_name || '')}</span>`;
+  const section = (title, rows) => `<div class="kv-section"><div class="section-title">${title}</div><dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
+  document.getElementById('entity-detail').innerHTML = `<div class="kv-grid">
+    ${section('Address', [['Registered address', address.length ? address.map(esc).join('<br>') : '<span class="muted">not set</span>']])}
+    ${section('Registration and tax', [
+      ['Chamber of Commerce no.', val(e.registration_number)],
+      ['VAT number', val(e.vat_number)],
+      ['Tax number (TIN)', val(e.tax_number)],
+      ['Incorporated', val(e.incorporation_date)],
+    ])}
+    ${section('Reporting', [
+      ['Reporting framework', val(e.framework)],
+      ['Main currency', val(e.main_currency)],
+      ['Financial year', e.year_end_month ? esc(financialYearText(e.year_end_month)) : '<span class="muted">not set</span>'],
+      ['Books kept in', `${BASE} (group reporting currency)`],
+    ])}
+    ${section('Group', [
+      ['Owned by', e.parent_id && byId[e.parent_id] ? `${link(byId[e.parent_id])} <span class="muted">${e.ownership_pct}%</span>` : e.is_consolidation ? `Consolidates ${(e.members || []).map((m) => link(byId[m])).join(', ')}` : '<span class="muted">Not owned by a group company</span>'],
+      ['Owns', subs.length ? subs.map((s) => `${link(s)} <span class="muted">${s.ownership_pct}%</span>`).join('<br>') : '<span class="muted">no subsidiaries</span>'],
+      ['Consolidated in', inCons.length ? inCons.map(link).join('<br>') : '<span class="muted">not consolidated</span>'],
+    ])}
+    ${section('Contact', [
+      ['E-mail', e.email ? `<a href="mailto:${esc(e.email)}">${esc(e.email)}</a>` : '<span class="muted">not set</span>'],
+      ['Phone', val(e.phone)],
+    ])}
+    ${section('Directors and notes', [
+      ['Directors', e.directors ? esc(e.directors).replace(/\n/g, '<br>') : '<span class="muted">not set</span>'],
+      ['Notes', e.notes ? esc(e.notes).replace(/\n/g, '<br>') : '<span class="muted">none</span>'],
+    ])}
+  </div>`;
+  const ids = [e.id, ...(e.members || [])];
+  const banks = accounts.filter((a) => a.bank_currency && ids.includes(a.entity_id));
+  document.getElementById('entity-banks-table').innerHTML =
+    `<thead><tr><th>Account</th><th>Name</th>${e.is_consolidation ? '<th>Company</th>' : ''}<th>Currency</th><th>IBAN</th><th class="num">Balance (GBP)</th></tr></thead><tbody>` +
+    (banks
+      .map(
+        (a) => `<tr><td>${acctLink(a.code, '')}</td><td>${esc(a.name)}</td>${e.is_consolidation ? `<td><span class="entity-tag">${esc(entityCode(a.entity_id))}</span></td>` : ''}
+          <td>${esc(a.bank_currency)}</td><td>${esc(a.iban || '')}</td><td class="num">${fmt(a.balance)}</td></tr>`
+      )
+      .join('') || `<tr><td colspan="${e.is_consolidation ? 6 : 5}" class="hint">${e.is_consolidation ? 'The consolidated entity has no bank accounts of its own.' : 'No bank accounts for this company yet.'}</td></tr>`) +
+    '</tbody>';
+}
+
+document.getElementById('btn-entity-financials').addEventListener('click', () => {
+  if (!ENTITY_VIEW) return;
+  CURRENT_ENTITY = String(ENTITY_VIEW.id);
+  try {
+    localStorage.setItem('nb-entity', CURRENT_ENTITY);
+  } catch {
+    /* optional */
+  }
+  fillEntitySelect();
+  location.hash = '#financials';
+});
+
+const entityDetailsForm = document.getElementById('form-entity-details');
+const ENTITY_DETAIL_FIELDS = ['address_line1', 'address_line2', 'postal_code', 'city', 'region', 'country', 'registration_number', 'vat_number', 'tax_number', 'incorporation_date', 'email', 'phone', 'directors', 'notes'];
+
+document.getElementById('btn-entity-edit').addEventListener('click', () => {
+  if (!ENTITY_VIEW) return;
+  entityDetailsForm.reset();
+  document.getElementById('entity-details-error').textContent = '';
+  document.getElementById('entity-details-title').textContent = `Details of ${ENTITY_VIEW.name}`;
+  for (const f of ENTITY_DETAIL_FIELDS) entityDetailsForm[f].value = ENTITY_VIEW[f] || '';
+  document.getElementById('dialog-entity-details').showModal();
+});
+
+entityDetailsForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const payload = Object.fromEntries(ENTITY_DETAIL_FIELDS.map((f) => [f, entityDetailsForm[f].value.trim()]));
+  try {
+    await post(`/api/entities/${ENTITY_VIEW.id}`, payload, 'PUT');
+    document.getElementById('dialog-entity-details').close();
+    META.entities = await api('/api/entities');
+    await loadEntityView(ENTITY_VIEW.id);
+  } catch (err) {
+    document.getElementById('entity-details-error').textContent = err.message;
+  }
+});
 
 // ---------- Intercompany reconciliation ----------
 

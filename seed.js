@@ -14,7 +14,7 @@ const HOLDING_LABELS = { revenue: 'Management fee income', overheads: 'Holding c
 const GAMBLING_LABELS = { revenue: 'Gaming revenue', cost_of_sales: 'Cost of gaming operations', overheads: 'Marketing & administrative expenses' };
 const ENTITIES = [
   {
-    code: 'SPARK', x: 'X1', name: 'Sparkworks Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    code: 'SPARK', vat_number: 'CY10203040A', x: 'X1', name: 'Sparkworks Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
     labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
   },
   {
@@ -22,15 +22,15 @@ const ENTITIES = [
     parent: 'SPARK', pct: 80, labels: GAMBLING_LABELS, hide: ['depreciation'],
   },
   {
-    code: 'NBP', x: 'X3', name: 'SC Technology Limited', entity_type: 'tech_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
+    code: 'NBP', vat_number: 'GB333444555', x: 'X3', name: 'SC Technology Limited', entity_type: 'tech_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
     labels: { revenue: 'Technology service fees', cost_of_sales: 'Direct delivery costs', overheads: 'Operating expenses' }, hide: ['depreciation'],
   },
   {
-    code: 'NACS', x: 'X4', name: 'NACS Technology Limited', entity_type: 'admin_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
+    code: 'NACS', vat_number: 'GB555777999', x: 'X4', name: 'NACS Technology Limited', entity_type: 'admin_services', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 5,
     labels: { revenue: 'Administration service fees', cost_of_sales: 'Cost of services', overheads: 'Staff & office costs' }, hide: ['depreciation'],
   },
   {
-    code: 'VOX', x: 'X5', name: 'Voxivibe Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    code: 'VOX', vat_number: 'CY10506070B', x: 'X5', name: 'Voxivibe Holding Limited', entity_type: 'holding', country: 'Cyprus', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
     labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
   },
   {
@@ -38,15 +38,15 @@ const ENTITIES = [
     parent: 'VOX', pct: 100, labels: GAMBLING_LABELS, hide: ['depreciation'],
   },
   {
-    code: 'NBH', x: 'X7', name: 'STech Technology Holding (CY) Limited', entity_type: 'holding', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    code: 'NBH', vat_number: 'MT87654321', x: 'X7', name: 'STech Technology Holding (CY) Limited', entity_type: 'holding', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
     labels: HOLDING_LABELS, hide: ['cost_of_sales', 'depreciation'],
   },
   {
-    code: 'NBT', x: 'X8', name: 'STech Technology UK Ltd', entity_type: 'gambling', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 8,
+    code: 'NBT', vat_number: 'GB444555666', x: 'X8', name: 'STech Technology UK Ltd', entity_type: 'gambling', country: 'United Kingdom', framework: 'UK GAAP (FRS 102)', main_currency: 'GBP', year_end_month: 8,
     parent: 'NBH', pct: 100, labels: GAMBLING_LABELS, hide: [],
   },
   {
-    code: 'NBS', x: 'X9', name: 'STech European Entertainment Limited', entity_type: 'services', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
+    code: 'NBS', vat_number: 'MT12345678', x: 'X9', name: 'STech European Entertainment Limited', entity_type: 'services', country: 'Malta', framework: 'IFRS', main_currency: 'EUR', year_end_month: 12,
     parent: 'NBH', pct: 100, labels: { revenue: 'Service fees from group companies', cost_of_sales: 'Direct service costs', overheads: 'Operating expenses' }, hide: ['depreciation', 'inventory'],
   },
 ];
@@ -166,6 +166,7 @@ async function seed() {
   const E = {};
   for (const e of ENTITIES) {
     E[e.code] = (await acct.createEntity({
+      vat_number: e.vat_number || null,
       code: e.x, name: e.name, entity_type: e.entity_type, country: e.country, framework: e.framework, main_currency: e.main_currency, year_end_month: e.year_end_month, labels: e.labels, hide: e.hide,
     })).id;
   }

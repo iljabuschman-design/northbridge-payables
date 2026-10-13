@@ -133,6 +133,9 @@ async function requireEntity(id) {
   return e;
 }
 
+// Company details kept per entity (text, all optional).
+const ENTITY_DETAIL_FIELDS = ['address_line1', 'address_line2', 'postal_code', 'city', 'region', 'registration_number', 'vat_number', 'tax_number', 'incorporation_date', 'email', 'phone', 'directors', 'notes'];
+
 /** Validate the profile fields of an entity and return them as column values. */
 async function entityProfile(data, selfId = null) {
   const type = data.entity_type ? String(data.entity_type) : null;
@@ -163,7 +166,11 @@ async function entityProfile(data, selfId = null) {
   const labels = data.labels && typeof data.labels === 'object' ? data.labels : {};
   for (const k of Object.keys(labels)) if (!CATEGORY_BY_KEY[k]) throw httpError(400, `Unknown reporting category ${k}`);
   const hide = Array.isArray(data.hide) ? data.hide.filter((k) => CATEGORY_BY_KEY[k]) : [];
+  const details = Object.fromEntries(ENTITY_DETAIL_FIELDS.map((f) => [f, clean(data[f])]));
+  if (details.incorporation_date && !/^\d{4}-\d{2}-\d{2}$/.test(details.incorporation_date)) throw httpError(400, 'The incorporation date must be a date (YYYY-MM-DD)');
+  if (details.email && !/^[^\s@]+@[^\s@]+$/.test(details.email)) throw httpError(400, 'That e-mail address does not look right');
   return {
+    ...details,
     entity_type: type,
     country: clean(data.country),
     framework: clean(data.framework),
@@ -191,10 +198,10 @@ async function createEntity({ code, name, ...profile }) {
   if (!name) throw httpError(400, 'Entity name is required');
   if (await db.get('SELECT 1 FROM entities WHERE code = ?', code)) throw httpError(400, `Entity ${code} already exists`);
   const p = await entityProfile(profile);
+  const cols = ['code', 'name', 'entity_type', 'country', 'framework', 'main_currency', 'year_end_month', 'consolidation_of', 'parent_id', 'ownership_pct', 'labels_json', 'hide_json', ...ENTITY_DETAIL_FIELDS];
   const info = (await db.run(
-    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, year_end_month, consolidation_of, parent_id, ownership_pct, labels_json, hide_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.consolidation_of, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
+    `INSERT INTO entities (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    code, name, ...cols.slice(2).map((c) => p[c])
   ));
   await rebuildEntityMembers();
   return (await getEntity(Number(info.lastInsertRowid)));
@@ -205,10 +212,12 @@ async function updateEntity(id, { name, ...profile }) {
   if (!existing) throw httpError(404, 'Entity not found');
   if (name !== undefined && !String(name).trim()) throw httpError(400, 'Entity name is required');
   const p = await entityProfile({ ...existing, ...profile }, existing.id);
+  const cols = ['entity_type', 'country', 'framework', 'main_currency', 'year_end_month', 'consolidation_of', 'parent_id', 'ownership_pct', 'labels_json', 'hide_json', ...ENTITY_DETAIL_FIELDS];
   await db.run(
-    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, year_end_month = ?, consolidation_of = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
+    `UPDATE entities SET name = ?, ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
     name !== undefined ? String(name).trim() : existing.name,
-    p.entity_type, p.country, p.framework, p.main_currency, p.year_end_month, p.consolidation_of, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
+    ...cols.map((c) => p[c]),
+    existing.id
   );
   await rebuildEntityMembers();
   return (await getEntity(existing.id));
