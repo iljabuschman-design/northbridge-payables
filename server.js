@@ -19,18 +19,34 @@ const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
 
 // Create the tables and demo data (first start only), then start the background jobs.
-// Requests wait for this; on Vercel it runs once per function instance.
-const ready = init()
-  .then(seedIfEmpty)
-  .then(acct.setUpVatCodes)
-  .then(hmrc.setUp)
-  .then(reimb.setUpReimbursements)
-  .then(auth.ensureDefaultUsers)
-  .then(() => {
-    fx.startScheduler();
-    assets.startScheduler();
-  });
-ready.catch((err) => console.error('Start-up failed:', err));
+// Requests wait for this; on Vercel it runs once per function instance. A failed start-up
+// (e.g. the database was busy) is tried again by the next request instead of failing for good.
+let schedulersStarted = false;
+function startUp() {
+  const p = init()
+    .then(seedIfEmpty)
+    .then(acct.setUpVatCodes)
+    .then(hmrc.setUp)
+    .then(reimb.setUpReimbursements)
+    .then(auth.ensureDefaultUsers)
+    .then(() => {
+      if (schedulersStarted) return;
+      schedulersStarted = true;
+      fx.startScheduler();
+      assets.startScheduler();
+    });
+  p.catch((err) => console.error('Start-up failed:', err));
+  return p;
+}
+let ready = startUp();
+async function whenReady() {
+  try {
+    await ready;
+  } catch {
+    ready = startUp();
+    await ready;
+  }
+}
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -399,7 +415,7 @@ async function handler(req, res) {
       return sendJson(res, 500, { error: err.message });
     }
   }
-  await ready;
+  await whenReady();
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith('/api/')) {

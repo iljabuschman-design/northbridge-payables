@@ -20,7 +20,7 @@
  */
 
 const crypto = require('crypto');
-const { db, nowText } = require('./db');
+const { db, transaction, nowText } = require('./db');
 const acct = require('./accounting');
 const vat = require('./vat');
 const pkg = require('./package.json');
@@ -36,6 +36,15 @@ const configured = () => Boolean(process.env.HMRC_CLIENT_ID && process.env.HMRC_
 
 /** Tables for the connections and for sign-in attempts in progress; added to existing databases too. */
 async function setUp() {
+  // Several function instances can start at once, and Postgres rejects two concurrent CREATE TABLEs
+  // of the same name: take a lock so one runs the set-up and the others then find it done.
+  await transaction(async () => {
+    await db.lock(424243);
+    await createTables();
+  });
+}
+
+async function createTables() {
   await db.exec(`CREATE TABLE IF NOT EXISTS hmrc_connections (
     entity_id INTEGER PRIMARY KEY REFERENCES entities(id),
     vrn TEXT NOT NULL,
