@@ -366,9 +366,116 @@ async function loadDashboard() {
 
 // ---------- Invoices ----------
 
+// Invoices as loaded and the filters chosen, per page (purchase / sale).
+const INVOICES = { purchase: [], sale: [] };
+const INVOICE_FILTERS = {
+  purchase: { entity: null, status: '', party: '', currency: '', from: '', to: '', q: '' },
+  sale: { entity: null, status: '', party: '', currency: '', from: '', to: '', q: '' },
+};
+
+const isOverdue = (i) => i.status !== 'Paid' && i.due_date && i.due_date < today();
+
+const INVOICE_STATUS_FILTERS = [
+  ['', 'All statuses'],
+  ['unpaid', 'Unpaid (nothing paid yet)'],
+  ['partial', 'Partially paid'],
+  ['open', 'Not fully paid (unpaid + partially paid)'],
+  ['paid', 'Paid'],
+  ['overdue', 'Overdue'],
+];
+
+function invoiceMatches(i, f) {
+  if (f.entity && String(i.entity_id) !== String(f.entity)) return false;
+  if (f.party && String(i.party_id) !== String(f.party)) return false;
+  if (f.currency && i.currency !== f.currency) return false;
+  if (f.from && i.invoice_date < f.from) return false;
+  if (f.to && i.invoice_date > f.to) return false;
+  if (f.status === 'unpaid' && i.status !== 'Open') return false;
+  if (f.status === 'partial' && i.status !== 'Partially Paid') return false;
+  if (f.status === 'open' && i.status === 'Paid') return false;
+  if (f.status === 'paid' && i.status !== 'Paid') return false;
+  if (f.status === 'overdue' && !isOverdue(i)) return false;
+  if (f.q) {
+    const hay = `${i.invoice_number} ${i.party_name} ${i.notes || ''}`.toLowerCase();
+    if (!f.q.toLowerCase().split(/\s+/).every((w) => hay.includes(w))) return false;
+  }
+  return true;
+}
+
+/** The filter bar above an invoice table (built once, its choices refreshed on every load). */
+function ensureInvoiceFilterBar(type) {
+  const tableId = type === 'sale' ? 'sales-table' : 'purchases-table';
+  const id = `invoice-filters-${type}`;
+  let bar = document.getElementById(id);
+  if (bar) return bar;
+  const wrap = document.getElementById(tableId).closest('.table-wrap');
+  bar = document.createElement('div');
+  bar.id = id;
+  bar.className = 'filter-bar';
+  const partyLabel = type === 'sale' ? 'Customer' : 'Supplier';
+  bar.innerHTML = `
+    <label>Company <select data-f="entity"></select></label>
+    <label>Status <select data-f="status">${INVOICE_STATUS_FILTERS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+    <label>${partyLabel} <select data-f="party"></select></label>
+    <label>Currency <select data-f="currency"></select></label>
+    <label>Date from <input type="date" data-f="from" /></label>
+    <label>to <input type="date" data-f="to" /></label>
+    <label class="grow">Search <input type="search" data-f="q" placeholder="Invoice number, ${partyLabel.toLowerCase()} or notes" /></label>
+    <button type="button" class="btn btn-small" data-f-clear>Clear filters</button>
+    <span class="muted filter-count" data-f-count></span>`;
+  const prev = wrap.previousElementSibling;
+  (prev && prev.classList.contains('export-bar') ? prev : wrap).before(bar);
+  const apply = () => {
+    const f = INVOICE_FILTERS[type];
+    bar.querySelectorAll('[data-f]').forEach((el) => (f[el.dataset.f] = el.value));
+    renderInvoices(type);
+  };
+  bar.addEventListener('input', apply);
+  bar.addEventListener('change', apply);
+  bar.querySelector('[data-f-clear]').addEventListener('click', () => {
+    INVOICE_FILTERS[type] = { entity: '', status: '', party: '', currency: '', from: '', to: '', q: '' };
+    fillInvoiceFilterBar(type);
+    renderInvoices(type);
+  });
+  return bar;
+}
+
+/** Set the choices of the selects from the loaded invoices and show the chosen values. */
+function fillInvoiceFilterBar(type) {
+  const bar = ensureInvoiceFilterBar(type);
+  const f = INVOICE_FILTERS[type];
+  const list = INVOICES[type];
+  const opts = (items, all) => `<option value="">${all}</option>` + items.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  const uniq = (key, label) => [...new Map(list.map((i) => [String(i[key]), label(i)])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  bar.querySelector('[data-f=entity]').innerHTML = opts(META.entities.map((e) => [String(e.id), `${e.code} · ${e.name}`]), 'All companies');
+  bar.querySelector('[data-f=party]').innerHTML = opts(uniq('party_id', (i) => i.party_name), type === 'sale' ? 'All customers' : 'All suppliers');
+  bar.querySelector('[data-f=currency]').innerHTML = opts([...new Set(list.map((i) => i.currency))].sort().map((c) => [c, c]), 'All currencies');
+  for (const el of bar.querySelectorAll('[data-f]')) {
+    // A choice that no longer exists (e.g. another company) falls back to "all".
+    if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === String(f[el.dataset.f] ?? ''))) f[el.dataset.f] = '';
+    el.value = f[el.dataset.f] ?? '';
+  }
+}
+
 async function loadInvoices(type) {
-  const invoices = await api(`/api/invoices?type=${type}`);
+  // All companies are loaded; the page filters them (it starts on the company chosen in the top bar).
+  INVOICES[type] = await api(`/api/invoices?type=${type}&entity=all`);
+  const f = INVOICE_FILTERS[type];
+  // Choosing another company in the top bar moves the filter along with it.
+  if (f.topbar !== CURRENT_ENTITY) f.entity = CURRENT_ENTITY || '';
+  f.topbar = CURRENT_ENTITY;
+  fillInvoiceFilterBar(type);
+  renderInvoices(type);
+}
+
+function renderInvoices(type) {
+  const all = INVOICES[type];
+  const f = INVOICE_FILTERS[type];
+  const invoices = all.filter((i) => invoiceMatches(i, f));
   const table = document.getElementById(type === 'sale' ? 'sales-table' : 'purchases-table');
+  const open = invoices.filter((i) => i.status !== 'Paid');
+  document.querySelector(`#invoice-filters-${type} [data-f-count]`).textContent =
+    `Showing ${invoices.length} of ${all.length} · outstanding ${fmt(open.reduce((t, i) => t + i.remaining_base, 0), BASE)}`;
   table.innerHTML = `
     <thead><tr>
       <th>Entity</th><th>${type === 'sale' ? 'Customer' : 'Supplier'}</th><th>Invoice #</th><th>Date</th><th>Ccy</th>
@@ -386,17 +493,18 @@ async function loadInvoices(type) {
         <td class="num">${fmt(i.net_amount)}</td><td class="num">${fmt(i.vat_amount)}</td><td class="num">${fmt(i.total_amount)}</td>
         <td class="num">${i.exchange_rate}</td><td class="num">${fmt(i.base_total, BASE)}</td>
         <td class="num">${fmt(i.paid_amount)}</td><td class="num">${fmt(i.remaining_amount)}</td><td class="num">${fmt(i.remaining_base, BASE)}</td>
-        <td>${statusBadge(i.status)}</td>
+        <td>${statusBadge(i.status)}${isOverdue(i) ? ' <span class="badge bad" title="Due ' + esc(i.due_date) + '">Overdue</span>' : ''}</td>
         ${type === 'purchase' ? `<td>${i.status !== 'Paid' ? `<button class="btn btn-small btn-pay" data-id="${i.id}">Pay</button>` : ''}</td>` : ''}
       </tr>`
         )
-        .join('') || `<tr><td colspan="15" class="hint">No ${type === 'sale' ? 'sales' : 'purchase'} invoices yet.</td></tr>`
+        .join('') ||
+      `<tr><td colspan="15" class="hint">${all.length ? 'No invoices match these filters.' : `No ${type === 'sale' ? 'sales' : 'purchase'} invoices yet.`}</td></tr>`
     }</tbody>`;
   table.querySelectorAll('tr.clickable').forEach((tr) => tr.addEventListener('click', () => openInvoiceDetail(Number(tr.dataset.id))));
   table.querySelectorAll('.btn-pay').forEach((btn) =>
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      openPayDialog(invoices.find((i) => i.id === Number(btn.dataset.id)));
+      openPayDialog(all.find((i) => i.id === Number(btn.dataset.id)));
     })
   );
 }
