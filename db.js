@@ -15,7 +15,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 // Bump this whenever the schema changes incompatibly: the app's tables are
 // then dropped and rebuilt (and reseeded with demo data on startup).
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
@@ -25,10 +25,22 @@ CREATE TABLE IF NOT EXISTS company (
 );
 
 -- Legal entities. Every journal, invoice, asset and bank statement belongs to one.
+-- Besides its code and name an entity has a profile: what kind of company it is, where, the
+-- accounting framework it reports under, who owns it and how its statements are labelled
+-- (labels_json maps a reporting category to its name in that entity's statements; hide_json
+-- lists categories left out of its statements while empty).
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  entity_type TEXT,
+  country TEXT,
+  framework TEXT,
+  main_currency TEXT,
+  parent_id INTEGER REFERENCES entities(id),
+  ownership_pct REAL,
+  labels_json TEXT,
+  hide_json TEXT
 );
 
 -- Chart of accounts. "category" maps each ledger account onto a line of the
@@ -57,6 +69,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   account_number TEXT,
   iban TEXT,
   bic TEXT,
+  -- Set when the supplier/customer is another company of the group (intercompany).
+  group_entity_id INTEGER REFERENCES entities(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,6 +84,7 @@ CREATE TABLE IF NOT EXISTS customers (
   account_number TEXT,
   iban TEXT,
   bic TEXT,
+  group_entity_id INTEGER REFERENCES entities(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -285,7 +300,9 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   cost_center TEXT REFERENCES cost_centers(code),
   entity_id INTEGER NOT NULL REFERENCES entities(id),
   -- The invoice line this entry was posted from, so a reclassification updates the invoice too.
-  invoice_line_id INTEGER REFERENCES invoice_lines(id)
+  invoice_line_id INTEGER REFERENCES invoice_lines(id),
+  -- Intercompany: the group company on the other side of this entry (see intercompany.js).
+  counterparty_entity_id INTEGER REFERENCES entities(id)
 );
 
 -- Daily ECB reference rates, stored as "1 unit of currency = rate_to_base GBP".
@@ -408,6 +425,7 @@ CREATE INDEX IF NOT EXISTS idx_bank_lines_statement ON bank_statement_lines(stat
 CREATE INDEX IF NOT EXISTS idx_journals_period ON journals(period);
 CREATE INDEX IF NOT EXISTS idx_journals_entity ON journals(entity_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entity ON ledger_entries(entity_id, account_code);
+CREATE INDEX IF NOT EXISTS idx_ledger_counterparty ON ledger_entries(counterparty_entity_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_entity ON invoices(entity_id, type);
 CREATE INDEX IF NOT EXISTS idx_asset_depr_period ON asset_depreciation(period);
 `;

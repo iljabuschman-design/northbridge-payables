@@ -144,6 +144,7 @@ table.table tbody tr.clickable { cursor: pointer; }
 .badge.open { background: var(--amber-bg); color: var(--amber); }
 .badge.partial { background: var(--blue-bg); color: var(--blue); }
 .badge.paid { background: var(--green-bg); color: var(--green); }
+.badge.bad { background: var(--red-bg); color: var(--red); }
 
 .btn {
   border: 1px solid var(--border);
@@ -575,3 +576,9 @@ table.table thead th.sorted-desc::after { content: ' BC'; font-size: 9px; color
   .camera-dialog[open] { display: flex; flex-direction: column; }
   .camera-view { flex: 1; aspect-ratio: auto; max-height: none; }
 }
+
+/* Intercompany */
+#ic-pl-table td, #ic-bs-table td { vertical-align: middle; }
+#ic-pl-table tr.sub td, #ic-bs-table tr.sub td { font-weight: 700; }
+#ic-checks-table td:nth-child(3) .muted { font-size: 12.5px; font-weight: 400; margin-top: 2px; }
+#ic-invoices-table td.muted { font-size: 12.5px; max-width: 320px; }

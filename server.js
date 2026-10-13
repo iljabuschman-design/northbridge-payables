@@ -13,6 +13,7 @@ const recognition = require('./recognition');
 const reimb = require('./reimbursements');
 const mailbox = require('./mailbox');
 const vat = require('./vat');
+const intercompany = require('./intercompany');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
 
@@ -146,12 +147,23 @@ const routes = [
       categories: acct.CATEGORIES,
       asset_types: Object.entries(assets.ASSET_TYPES).map(([key, t]) => ({ key, name: t.name })),
       entities: await acct.listEntities(),
+      entity_types: Object.entries(acct.ENTITY_TYPES).map(([key, name]) => ({ key, name })),
       database: db.kind,
       // Only the temporary SQLite database on Vercel resets; Postgres keeps everything.
       demo_mode: Boolean(process.env.VERCEL) && db.kind === 'sqlite',
     }),
   },
   { method: 'GET', pattern: /^\/api\/entities$/, handler: async () => acct.listEntities() },
+  { method: 'POST', pattern: /^\/api\/entities$/, handler: json((body) => acct.createEntity(body)) },
+  { method: 'PUT', pattern: /^\/api\/entities\/(\d+)$/, handler: json((body, m) => acct.updateEntity(m[1], body)) },
+
+  // Intercompany reconciliation (always across all group companies, whatever entity is selected)
+  { method: 'GET', pattern: /^\/api\/intercompany$/, handler: async (req, m, q) => intercompany.reconciliation({ from: q.get('from'), to: q.get('to'), tolerance: q.get('tolerance') }) },
+  {
+    method: 'GET',
+    pattern: /^\/api\/intercompany\/entries$/,
+    handler: async (req, m, q) => intercompany.pairEntries({ a: q.get('a'), b: q.get('b'), from: q.get('from'), to: q.get('to'), section: q.get('section') }),
+  },
 
   // VAT codes
   { method: 'GET', pattern: /^\/api\/vat-codes$/, handler: async () => acct.listVatCodes() },
@@ -296,12 +308,12 @@ const routes = [
   {
     method: 'GET',
     pattern: /^\/api\/reports$/,
-    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to'), cost_center: q.get('cost_center') || null, entity_id: q.get('entity') }),
+    handler: async (req, m, q) => acct.financialStatements({ from: q.get('from'), to: q.get('to'), cost_center: q.get('cost_center') || null, entity_id: q.get('entity'), consolidated: q.get('consolidated') === '1' }),
   },
   {
     method: 'GET',
     pattern: /^\/api\/reports\/cost-centers$/,
-    handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }),
+    handler: async (req, m, q) => acct.costCenterReport({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity'), consolidated: q.get('consolidated') === '1' }),
   },
   { method: 'GET', pattern: /^\/api\/kpis$/, handler: async (req, m, q) => acct.kpis({ from: q.get('from'), to: q.get('to'), entity_id: q.get('entity') }) },
 

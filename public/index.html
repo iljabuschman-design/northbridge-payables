@@ -52,6 +52,7 @@
           <button class="tab" data-tab="bank">Bank</button>
           <button class="tab" data-tab="journals">Journals</button>
           <button class="tab" data-tab="financials">Financials</button>
+          <button class="tab" data-tab="intercompany">Intercompany</button>
           <button class="tab" data-tab="setup">Setup</button>
           <button class="tab" data-tab="assumptions">Assumptions</button>
         </div>
@@ -402,6 +403,7 @@
         <label>P&amp;L for <select name="cost_center" id="fin-cc-select"></select></label>
         <button type="submit" class="btn">Update</button>
         <label class="check"><input type="checkbox" id="fin-detail" checked /> Show accounts</label>
+        <label class="check" id="fin-consolidated-wrap" hidden><input type="checkbox" id="fin-consolidated" checked /> Eliminate intercompany (consolidated)</label>
       </form>
     </div>
     <p class="hint entity-note"></p>
@@ -426,6 +428,47 @@
         <h2>Profit &amp; loss by cost centre</h2>
         <div class="table-wrap"><table class="table fin" id="cc-table"></table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- Intercompany reconciliation -->
+  <section id="view-intercompany" class="view" hidden>
+    <div class="panel">
+      <div class="panel-header wrap">
+        <h2>Intercompany reconciliation</h2>
+        <form id="form-ic" class="period-row period-form">
+          <label>From <select name="from"></select></label>
+          <label>To <select name="to"></select></label>
+          <label>Tolerance (£) <input name="tolerance" type="number" min="0" step="0.01" value="1" style="width:80px" /></label>
+          <button type="submit" class="btn">Update</button>
+        </form>
+      </div>
+      <p class="hint">Everything one group company books with another carries that company as its counterparty. Seen from both sides it must mirror: what one company earned is what the other spent, so the group result is not affected, and what one company is owed is what the other owes. This page always covers the whole group, whichever company is selected at the top.</p>
+      <p class="error" id="ic-error"></p>
+      <div class="cards" id="ic-summary"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Checks</h2>
+      <div class="table-wrap"><table class="table" id="ic-checks-table"></table></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Profit &amp; loss: does intercompany eliminate to zero?</h2>
+      <p class="hint">Per pair of companies, for the period. Income minus expense of both sides must be 0: one company's revenue is the other's cost. A difference changes the group result. Click a row to see the entries behind it.</p>
+      <div class="table-wrap"><table class="table fin" id="ic-pl-table"></table></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Balance sheet: do the balances agree?</h2>
+      <p class="hint">Per pair of companies, at the end of the period. A positive balance is owed to / invested by the company in the first column. The two sides must add up to 0: a receivable of one is the payable of the other, a loan lent is a loan borrowed, an investment is share capital held.</p>
+      <div class="table-wrap"><table class="table fin" id="ic-bs-table"></table></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <h2>Intercompany invoices</h2>
+      <p class="hint">Each intercompany sales invoice is matched with the purchase invoice of the other company (same invoice number). Differences are listed first.</p>
+      <div class="table-wrap"><table class="table" id="ic-invoices-table"></table></div>
     </div>
   </section>
 
@@ -493,6 +536,20 @@
   <!-- Setup -->
   <section id="view-setup" class="view" hidden>
     <div class="panel">
+      <div class="panel-header">
+        <h2>Group structure</h2>
+        <button class="btn btn-primary admin-only" id="btn-new-entity">+ New company</button>
+      </div>
+      <p class="hint">The companies of the group, who owns whom and how each one reports. Each company has its own accounts on top of the shared chart (marked with its code below) and its own names for the lines of its statements.</p>
+      <div class="table-wrap">
+        <table class="table" id="entities-table">
+          <thead><tr><th>Code</th><th>Company</th><th>Type</th><th>Country</th><th>Reporting framework</th><th>Owned by</th><th class="num">Own accounts</th><th>Statement lines</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
       <div class="panel-header">
         <h2>Chart of accounts</h2>
         <button class="btn btn-primary" id="btn-new-account">+ New account</button>
@@ -728,6 +785,8 @@
       <select name="currency" required class="currency-select"></select>
     </label>
     <label>VAT number <input name="vat_number" maxlength="30" /></label>
+    <label>Group company <select name="group_entity_id"></select></label>
+    <p class="hint" style="margin-top:-6px;">Choose a company of the group to make invoices with this party intercompany: they are reconciled against the other company's books.</p>
     <div class="section-title">Bank details <span class="muted">(used by the Pay button)</span></div>
     <div class="row">
       <label>Sort code <input name="sort_code" maxlength="8" placeholder="12-34-56" /></label>
@@ -792,7 +851,7 @@
     <label>Description <input name="description" required maxlength="120" /></label>
     <div class="table-wrap">
       <table class="table lines-table" id="journal-lines">
-        <thead><tr><th>Ledger account</th><th>Cost centre</th><th>Line description</th><th class="num">Debit</th><th class="num">Credit</th><th></th></tr></thead>
+        <thead><tr><th>Ledger account</th><th>Cost centre</th><th>Line description</th><th title="Only for intercompany lines">Counterparty</th><th class="num">Debit</th><th class="num">Credit</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -804,6 +863,53 @@
       <button type="submit" class="btn btn-primary">Post journal</button>
     </div>
   </form>
+</dialog>
+
+<!-- Company (entity) -->
+<dialog id="dialog-entity">
+  <form id="form-entity" class="form">
+    <h2 id="entity-dialog-title">New company</h2>
+    <div class="row">
+      <label>Code <input name="code" required maxlength="10" size="8" /></label>
+      <label style="flex:3">Name <input name="name" required maxlength="80" /></label>
+    </div>
+    <div class="row">
+      <label>Type <select name="entity_type"></select></label>
+      <label>Country <input name="country" maxlength="60" /></label>
+    </div>
+    <div class="row">
+      <label>Reporting framework <input name="framework" maxlength="60" placeholder="UK GAAP (FRS 102)" /></label>
+      <label>Main currency <select name="main_currency" class="currency-select"></select></label>
+    </div>
+    <div class="row">
+      <label style="flex:2">Owned by <select name="parent_id"></select></label>
+      <label>Ownership % <input name="ownership_pct" type="number" min="1" max="100" step="0.01" value="100" /></label>
+    </div>
+    <div class="section-title">Names in this company's statements <span class="muted">(leave empty for the standard name)</span></div>
+    <div class="row">
+      <label>Revenue <input name="label_revenue" maxlength="60" /></label>
+      <label>Cost of sales <input name="label_cost_of_sales" maxlength="60" /></label>
+    </div>
+    <div class="row">
+      <label>Overheads <input name="label_overheads" maxlength="60" /></label>
+      <label>Fixed assets <input name="label_fixed_assets" maxlength="60" /></label>
+    </div>
+    <p class="error" id="entity-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save company</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Intercompany: the entries behind one pair of companies -->
+<dialog id="dialog-ic-entries" class="wide">
+  <div class="form">
+    <h2 id="ic-entries-title">Entries</h2>
+    <p class="hint" id="ic-entries-hint"></p>
+    <div class="table-wrap"><table class="table" id="ic-entries-table"></table></div>
+    <div class="dialog-actions"><button type="button" class="btn" data-close>Close</button></div>
+  </div>
 </dialog>
 
 <!-- Ledger account -->

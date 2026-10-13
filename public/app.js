@@ -84,7 +84,7 @@ function fillEntityField(select, selected) {
 function updateEntityNotes() {
   const note = CURRENT_ENTITY
     ? `Showing ${entityName(CURRENT_ENTITY)}.`
-    : 'Showing all entities added together. Intercompany balances, the management fee and Holding’s investment in Trading are not eliminated, so this is not a consolidation.';
+    : 'Showing all companies of the group added together. Intercompany balances, fees, loans and investments are not eliminated here (the Financials page can eliminate them; the Intercompany page reconciles them).';
   document.querySelectorAll('.entity-note').forEach((el) => (el.textContent = note));
 }
 
@@ -243,6 +243,7 @@ const LOADERS = {
   journals: loadJournals,
   ledger: loadLedger,
   financials: loadFinancials,
+  intercompany: loadIntercompany,
   vat: async () => {
     await loadVat();
     await loadVatCodes();
@@ -465,13 +466,18 @@ async function openInvoiceDetail(id) {
 }
 
 /** Journal lines; with openable = true, a click on a line opens its journal (e.g. from an invoice). */
+/** "↔ NBM" next to an entry that is with another group company. */
+function counterpartyTag(e) {
+  return e.counterparty_code ? ` <span class="entity-tag" title="Intercompany: with ${esc(e.counterparty_code)}">↔ ${esc(e.counterparty_code)}</span>` : '';
+}
+
 function ledgerTable(entries, openable = false) {
   return `<div class="table-wrap"><table class="table">
     <thead><tr><th>Date</th><th>Account</th><th>Cost centre</th><th>Description</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
     <tbody>${entries
       .map(
         (e) => `<tr ${openable ? `class="clickable" data-journal="${e.journal_id}"` : ''}><td>${esc(e.entry_date)}</td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td>
-          <td>${esc(e.description)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
+          <td>${esc(e.description)}${counterpartyTag(e)}${e.fx_note ? `<div class="muted">${esc(e.fx_note)}</div>` : ''}</td><td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td></tr>`
       )
       .join('')}</tbody>
   </table></div>`;
@@ -1107,6 +1113,9 @@ function addJournalLine(prefill = null) {
     <td><select class="j-account" required><option value="">Choose account…</option>${accountOptions(forEntity(journalForm.entity_id.value), p.account_code)}</select></td>
     <td><select class="j-cc" disabled>${ccOptions(p.cost_center || '')}</select></td>
     <td><input class="j-desc" maxlength="120" value="${esc(p.description || '')}" /></td>
+    <td><select class="j-cp"><option value="">-</option>${META.entities
+      .map((e) => `<option value="${e.id}" ${String(e.id) === String(p.counterparty_entity_id || '') ? 'selected' : ''}>${esc(e.code)}</option>`)
+      .join('')}</select></td>
     <td class="num"><input class="j-debit num" type="number" step="0.01" min="0" value="${p.debit ? p.debit : ''}" /></td>
     <td class="num"><input class="j-credit num" type="number" step="0.01" min="0" value="${p.credit ? p.credit : ''}" /></td>
     <td><button type="button" class="btn btn-small btn-icon" title="Remove line">×</button></td>`;
@@ -1134,6 +1143,7 @@ function journalLinesFromForm() {
     account_code: tr.querySelector('.j-account').value,
     cost_center: tr.querySelector('.j-cc').value || null,
     description: tr.querySelector('.j-desc').value.trim(),
+    counterparty_entity_id: Number(tr.querySelector('.j-cp').value) || null,
     debit: parseFloat(tr.querySelector('.j-debit').value) || 0,
     credit: parseFloat(tr.querySelector('.j-credit').value) || 0,
   }));
@@ -1186,7 +1196,7 @@ async function loadLedger() {
   document.querySelector('#ledger-table tbody').innerHTML = entries
     .map(
       (e) => `<tr class="clickable" data-journal="${e.journal_id}">
-        <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}</td>
+        <td>${esc(e.entry_date)}</td><td><span class="entity-tag">${esc(e.entity_code)}</span></td><td>${acctLink(e.account_code, e.account_name)}</td><td>${esc(ccName(e.cost_center))}</td><td>${esc(e.description)}${counterpartyTag(e)}</td>
         <td class="muted">${esc(e.fx_note || '')}</td>
         <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td>
         <td><button type="button" class="btn btn-small btn-edit-entry" data-edit-journal="${e.journal_id}" title="Edit this entry's journal">Edit</button></td></tr>`
@@ -1208,12 +1218,19 @@ periodForm.addEventListener('submit', (e) => {
   e.preventDefault();
   loadFinancials();
 });
+document.getElementById('fin-consolidated').addEventListener('change', () => loadFinancials());
 document.getElementById('fin-detail').addEventListener('change', () => {
   document.getElementById('view-financials').classList.toggle('hide-detail', !document.getElementById('fin-detail').checked);
 });
 
+// The company shown on Financials: its own names for statement lines and the lines it leaves out.
+let FIN_PROFILE = { labels: {}, hide: [] };
+const finName = (g) => (FIN_PROFILE.labels && FIN_PROFILE.labels[g.key]) || g.name;
+const finHidden = (g) => (FIN_PROFILE.hide || []).includes(g.key) && !g.accounts.length && g.total === 0;
+
 function finGroupRows(group) {
-  const head = `<tr class="cat"><td>${esc(group.name)}</td><td class="num">${fmt(group.total)}</td></tr>`;
+  if (finHidden(group)) return '';
+  const head = `<tr class="cat"><td>${esc(finName(group))}</td><td class="num">${fmt(group.total)}</td></tr>`;
   const lines = group.accounts
     .map((a) => `<tr class="acct"><td>${a.code ? acctLink(a.code, a.name) : esc(a.name)}</td><td class="num">${fmt(a.amount)}</td></tr>`)
     .join('');
@@ -1233,20 +1250,26 @@ async function loadFinancials() {
     '<option value="none">Unallocated</option>';
   ccSel.value = ccPrev;
   const { from, to } = periodRange(periodForm);
+  const consolidatedWrap = document.getElementById('fin-consolidated-wrap');
+  consolidatedWrap.hidden = CURRENT_ENTITY !== '';
+  const consolidated = CURRENT_ENTITY === '' && document.getElementById('fin-consolidated').checked;
   let r;
   let ccr;
   try {
     [r, ccr] = await Promise.all([
-      api(`/api/reports?from=${from}&to=${to}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}`),
-      api(`/api/reports/cost-centers?from=${from}&to=${to}`),
+      api(`/api/reports?from=${from}&to=${to}${ccSel.value ? `&cost_center=${encodeURIComponent(ccSel.value)}` : ''}${consolidated ? '&consolidated=1' : ''}`),
+      api(`/api/reports/cost-centers?from=${from}&to=${to}${consolidated ? '&consolidated=1' : ''}`),
     ]);
   } catch (err) {
     document.getElementById('pl-period').textContent = err.message;
     return;
   }
   const pl = r.profit_and_loss;
+  FIN_PROFILE = r.entity ? { labels: r.entity.labels || {}, hide: r.entity.hide || [] } : { labels: {}, hide: [] };
   document.getElementById('pl-period').textContent =
-    `${r.from} to ${r.to}` + (r.cost_center ? ` · ${r.cost_center === 'none' ? 'unallocated lines only' : 'cost centre ' + ccName(r.cost_center)}` : ' · whole company');
+    `${r.from} to ${r.to}` +
+    (r.cost_center ? ` · ${r.cost_center === 'none' ? 'unallocated lines only' : 'cost centre ' + ccName(r.cost_center)}` : ' · whole company') +
+    (r.entity ? ` · ${r.entity.name}${r.entity.framework ? ` (${r.entity.framework})` : ''}` : r.consolidated ? ' · group, intercompany eliminated' : ' · all companies added together');
   document.getElementById('pl-table').innerHTML =
     finGroupRows(pl.revenue) +
     finGroupRows(pl.cost_of_sales) +
@@ -1271,7 +1294,7 @@ async function loadFinancials() {
     const rows = [...amounts.values()].sort((x, y) => (x.code || 'zzz').localeCompare(y.code || 'zzz'));
     if (!rows.length && o.total === 0 && c.total === 0) return '';
     return (
-      `<tr class="cat"><td>${esc(c.name)}</td><td class="num">${fmt(o.total)}</td><td class="num">${fmt(c.total)}</td></tr>` +
+      `<tr class="cat"><td>${esc(finName(c))}</td><td class="num">${fmt(o.total)}</td><td class="num">${fmt(c.total)}</td></tr>` +
       rows.map((a) => `<tr class="acct"><td>${a.code ? acctLink(a.code, a.name) : esc(a.name)}</td><td class="num">${fmt(a.o)}</td><td class="num">${fmt(a.c)}</td></tr>`).join('')
     );
   };
@@ -1287,8 +1310,14 @@ async function loadFinancials() {
     total3('Total equity & liabilities', opening.total_equity_liabilities, closing.total_equity_liabilities, 'grand') +
     '</tbody>';
   const bsCheck = document.getElementById('bs-check');
-  bsCheck.textContent = closing.balanced && opening.balanced ? '✓ Assets equal equity plus liabilities.' : '✗ Balance sheet does not balance - check the ledger.';
-  bsCheck.className = 'hint ' + (closing.balanced && opening.balanced ? 'pos' : 'neg');
+  const icDiff = r.consolidated ? closing.intercompany_difference : 0;
+  bsCheck.textContent =
+    closing.balanced && opening.balanced
+      ? icDiff
+        ? `✓ Assets equal equity plus liabilities - but ${fmt(Math.abs(icDiff), BASE)} of intercompany items do not agree between the companies (see Intercompany).`
+        : '✓ Assets equal equity plus liabilities.'
+      : '✗ Balance sheet does not balance - check the ledger.';
+  bsCheck.className = 'hint ' + (closing.balanced && opening.balanced && !icDiff ? 'pos' : 'neg');
 
   const cf = r.cash_flow;
   const cfGroups = (groups) => groups.filter((g) => g.accounts.length).map((g) => finGroupRows(g)).join('');
@@ -1312,6 +1341,213 @@ async function loadFinancials() {
   const cfCheck = document.getElementById('cf-check');
   cfCheck.textContent = cf.reconciles ? '✓ Opening cash plus net change equals closing cash.' : '✗ Cash flow does not reconcile.';
   cfCheck.className = 'hint ' + (cf.reconciles ? 'pos' : 'neg');
+}
+
+// ---------- Setup: group structure ----------
+
+const entityForm = document.getElementById('form-entity');
+let editingEntity = null;
+const LABEL_FIELDS = ['revenue', 'cost_of_sales', 'overheads', 'fixed_assets'];
+
+function renderEntities() {
+  const catName = (key) => (META.categories.find((c) => c.key === key) || {}).name || key;
+  document.querySelector('#entities-table tbody').innerHTML = META.entities
+    .map((e) => {
+      const parent = META.entities.find((p) => p.id === e.parent_id);
+      const own = ACCOUNTS.filter((a) => a.entity_id === e.id);
+      const labels = Object.entries(e.labels || {});
+      const labelText = labels.map(([k, v]) => `${catName(k)} → ${v}`).join('\n');
+      return `<tr>
+        <td><span class="entity-tag">${esc(e.code)}</span></td>
+        <td><strong>${esc(e.name)}</strong></td>
+        <td>${esc(e.type_name || '')}</td>
+        <td>${esc(e.country || '')}${e.main_currency ? ` <span class="muted">· ${esc(e.main_currency)}</span>` : ''}</td>
+        <td>${esc(e.framework || '')}</td>
+        <td>${parent ? `${esc(parent.code)} <span class="muted">${e.ownership_pct}%</span>` : '<span class="muted">Top of the group</span>'}</td>
+        <td class="num" title="${esc(own.map((a) => accountLabel(a)).join('\n'))}">${own.length}</td>
+        <td class="muted" title="${esc(labelText)}">${labels.length ? `${labels.length} renamed${(e.hide || []).length ? `, ${(e.hide || []).length} hidden when empty` : ''}` : 'Standard'}</td>
+        <td class="nowrap"><button class="btn btn-small admin-only" data-edit-entity="${e.id}">Edit</button></td>
+      </tr>`;
+    })
+    .join('');
+  document.querySelectorAll('[data-edit-entity]').forEach((btn) =>
+    btn.addEventListener('click', () => openEntityDialog(META.entities.find((e) => e.id === Number(btn.dataset.editEntity))))
+  );
+}
+
+function openEntityDialog(entity) {
+  editingEntity = entity || null;
+  entityForm.reset();
+  document.getElementById('entity-error').textContent = '';
+  document.getElementById('entity-dialog-title').textContent = entity ? `Edit ${entity.name}` : 'New company';
+  entityForm.entity_type.innerHTML = META.entity_types.map((t) => `<option value="${t.key}">${esc(t.name)}</option>`).join('');
+  entityForm.main_currency.innerHTML = currencyOptions(entity && entity.main_currency ? entity.main_currency : BASE);
+  entityForm.parent_id.innerHTML =
+    '<option value="">Top of the group</option>' +
+    META.entities.filter((e) => !entity || e.id !== entity.id).map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('');
+  entityForm.code.disabled = !!entity;
+  if (entity) {
+    entityForm.code.value = entity.code;
+    entityForm.name.value = entity.name;
+    entityForm.entity_type.value = entity.entity_type || 'other';
+    entityForm.country.value = entity.country || '';
+    entityForm.framework.value = entity.framework || '';
+    entityForm.parent_id.value = entity.parent_id || '';
+    entityForm.ownership_pct.value = entity.ownership_pct || 100;
+    for (const k of LABEL_FIELDS) entityForm[`label_${k}`].value = (entity.labels || {})[k] || '';
+  }
+  document.getElementById('dialog-entity').showModal();
+}
+
+document.getElementById('btn-new-entity').addEventListener('click', () => openEntityDialog(null));
+
+entityForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  // Labels not in the form (set up elsewhere) are kept.
+  const labels = { ...((editingEntity && editingEntity.labels) || {}) };
+  for (const k of LABEL_FIELDS) {
+    const v = entityForm[`label_${k}`].value.trim();
+    if (v) labels[k] = v;
+    else delete labels[k];
+  }
+  const payload = {
+    name: entityForm.name.value.trim(),
+    entity_type: entityForm.entity_type.value,
+    country: entityForm.country.value.trim(),
+    framework: entityForm.framework.value.trim(),
+    main_currency: entityForm.main_currency.value,
+    parent_id: entityForm.parent_id.value || null,
+    ownership_pct: Number(entityForm.ownership_pct.value) || 100,
+    labels,
+    hide: editingEntity ? editingEntity.hide || [] : [],
+  };
+  try {
+    if (editingEntity) await post(`/api/entities/${editingEntity.id}`, payload, 'PUT');
+    else await post('/api/entities', { ...payload, code: entityForm.code.value.trim() });
+    document.getElementById('dialog-entity').close();
+    META = await api('/api/meta');
+    fillEntitySelect();
+    await loadSetup();
+  } catch (err) {
+    document.getElementById('entity-error').textContent = err.message;
+  }
+});
+
+// ---------- Intercompany reconciliation ----------
+
+const icForm = document.getElementById('form-ic');
+icForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  loadIntercompany();
+});
+
+const okBadge = (ok, yes = 'Agrees', no = 'Difference') => `<span class="badge ${ok ? 'paid' : 'bad'}">${ok ? '✓ ' + yes : '✗ ' + no}</span>`;
+const diffCell = (n, ok) => `<td class="num ${ok ? '' : 'neg'}"><strong>${fmt(n)}</strong></td>`;
+
+let IC_RANGE = null;
+
+async function loadIntercompany() {
+  await loadPeriods();
+  fillPeriodSelects(icForm);
+  const { from, to } = periodRange(icForm);
+  document.getElementById('ic-error').textContent = '';
+  let r;
+  try {
+    r = await api(`/api/intercompany?from=${from}&to=${to}&tolerance=${encodeURIComponent(icForm.tolerance.value || 0)}`);
+  } catch (err) {
+    document.getElementById('ic-error').textContent = err.message;
+    return;
+  }
+  IC_RANGE = { from, to };
+  const s = r.summary;
+  const bad = r.checks.filter((c) => c.status !== 'ok').length;
+  document.getElementById('ic-summary').innerHTML = `
+    <div class="card"><div class="label">Checks passed</div><div class="value ${bad ? 'neg' : 'pos'}">${r.checks.length - bad} / ${r.checks.length}</div><div class="sub">${bad ? `${bad} with exceptions` : 'everything agrees'}</div></div>
+    <div class="card"><div class="label">Company pairs</div><div class="value">${s.pairs}</div><div class="sub">with intercompany activity</div></div>
+    <div class="card"><div class="label">Invoices matched</div><div class="value ${s.unmatched_invoices ? 'neg' : 'pos'}">${s.intercompany_invoices - s.unmatched_invoices} / ${s.intercompany_invoices}</div><div class="sub">${s.unmatched_invoices} to follow up</div></div>
+    <div class="card"><div class="label">Effect on group result</div><div class="value ${Math.abs(s.pl_difference) > r.tolerance ? 'neg' : 'pos'}">${fmt(s.pl_difference, BASE)}</div><div class="sub">should be 0.00</div></div>
+    <div class="card"><div class="label">Balance sheet difference</div><div class="value ${Math.abs(s.bs_difference) > r.tolerance ? 'neg' : 'pos'}">${fmt(s.bs_difference, BASE)}</div><div class="sub">should be 0.00</div></div>`;
+
+  document.getElementById('ic-checks-table').innerHTML =
+    `<thead><tr><th></th><th>Statement</th><th>Check</th><th class="num">Difference</th><th class="num">Exceptions</th></tr></thead><tbody>` +
+    r.checks
+      .map(
+        (c) => `<tr><td>${okBadge(c.status === 'ok', 'OK', 'Exception')}</td><td class="muted">${esc(c.statement)}</td>
+        <td><strong>${esc(c.title)}</strong><div class="muted">${esc(c.detail)}</div></td>${diffCell(c.difference, c.status === 'ok')}<td class="num">${c.exceptions || ''}</td></tr>`
+      )
+      .join('') +
+    '</tbody>';
+
+  const pairLabel = (p) => `<strong>${esc(p.a_code)}</strong> ↔ <strong>${esc(p.b_code)}</strong>`;
+  const none = (cols, text) => `<tr><td colspan="${cols}" class="hint">${text}</td></tr>`;
+  const plRows = r.pairs.flatMap((p) =>
+    p.pl.map(
+      (g, i) => `<tr class="clickable" data-ic-a="${p.a_id}" data-ic-b="${p.b_id}" data-ic-section="pl">
+        <td>${i === 0 ? pairLabel(p) : ''}</td><td>${esc(g.name)}</td>
+        <td class="num">${fmt(g.a_income)}</td><td class="num">${fmt(g.a_expense)}</td><td class="num">${fmt(g.b_income)}</td><td class="num">${fmt(g.b_expense)}</td>
+        <td class="num">${fmt(g.income)}</td><td class="num">${fmt(g.expense)}</td>${diffCell(g.difference, g.ok)}<td>${okBadge(g.ok)}</td></tr>`
+    )
+  );
+  const plTotal = r.pairs.reduce((t, p) => t + p.pl_difference, 0);
+  document.getElementById('ic-pl-table').innerHTML =
+    `<thead><tr><th>Companies (A ↔ B)</th><th>Kind</th><th class="num">A income</th><th class="num">A expense</th><th class="num">B income</th><th class="num">B expense</th>
+      <th class="num">Revenue (A+B)</th><th class="num">Cost (A+B)</th><th class="num">Difference</th><th></th></tr></thead><tbody>` +
+    (plRows.join('') || none(10, 'No intercompany profit & loss entries in this period.')) +
+    `<tr class="sub"><td colspan="8">Effect on the group result</td><td class="num">${fmt(plTotal, BASE)}</td><td></td></tr></tbody>`;
+
+  const bsRows = r.pairs.flatMap((p) =>
+    p.bs.map(
+      (g, i) => `<tr class="clickable" data-ic-a="${p.a_id}" data-ic-b="${p.b_id}" data-ic-section="bs">
+        <td>${i === 0 ? pairLabel(p) : ''}</td><td>${esc(g.name)}</td>
+        <td class="num">${fmt(g.a)}</td><td class="num">${fmt(g.b)}</td>${diffCell(g.difference, g.ok)}<td>${okBadge(g.ok)}</td></tr>`
+    )
+  );
+  const bsTotal = r.pairs.reduce((t, p) => t + p.bs_difference, 0);
+  document.getElementById('ic-bs-table').innerHTML =
+    `<thead><tr><th>Companies (A ↔ B)</th><th>Kind</th><th class="num">A's balance with B</th><th class="num">B's balance with A</th><th class="num">Difference</th><th></th></tr></thead><tbody>` +
+    (bsRows.join('') || none(6, 'No intercompany balances at the end of this period.')) +
+    `<tr class="sub"><td colspan="4">Total difference</td><td class="num">${fmt(bsTotal, BASE)}</td><td></td></tr></tbody>`;
+
+  document.querySelectorAll('#ic-pl-table tr[data-ic-a], #ic-bs-table tr[data-ic-a]').forEach((tr) =>
+    tr.addEventListener('click', () => openIcEntries(Number(tr.dataset.icA), Number(tr.dataset.icB), tr.dataset.icSection, r))
+  );
+
+  const ccy = (v, c) => (v === null || v === undefined ? '<span class="muted">-</span>' : `${fmt(v)} <span class="muted">${esc(c || '')}</span>`);
+  document.getElementById('ic-invoices-table').innerHTML =
+    `<thead><tr><th>Status</th><th>Seller</th><th>Buyer</th><th>Invoice</th><th>Seller date</th><th>Buyer date</th><th class="num">Seller net</th><th class="num">Buyer net</th>
+      <th class="num">Seller £</th><th class="num">Buyer £</th><th class="num">Difference £</th><th>Explanation</th></tr></thead><tbody>` +
+    (r.invoices
+      .map((m) => {
+        const cls = m.status === 'matched' ? 'paid' : m.status === 'period' || m.status === 'fx' ? 'partial' : m.status === 'amount' ? 'open' : 'bad';
+        return `<tr><td><span class="badge ${cls}">${esc(m.status_label)}</span></td>
+          <td><span class="entity-tag">${esc(m.seller_code)}</span></td><td><span class="entity-tag">${esc(m.buyer_code)}</span></td><td>${esc(m.invoice_number)}</td>
+          <td>${esc(m.seller_date || '')}</td><td>${esc(m.buyer_date || '')}</td>
+          <td class="num">${ccy(m.seller_net, m.seller_currency)}</td><td class="num">${ccy(m.buyer_net, m.buyer_currency)}</td>
+          <td class="num">${m.seller_base_net === null ? '' : fmt(m.seller_base_net)}</td><td class="num">${m.buyer_base_net === null ? '' : fmt(m.buyer_base_net)}</td>
+          ${diffCell(m.difference, m.status === 'matched')}<td class="muted">${esc(m.note)}</td></tr>`;
+      })
+      .join('') || none(12, 'No intercompany invoices in this period.')) +
+    '</tbody>';
+}
+
+async function openIcEntries(a, b, section, r) {
+  const pair = r.pairs.find((p) => p.a_id === a && p.b_id === b);
+  const rows = await api(`/api/intercompany/entries?a=${a}&b=${b}&from=${IC_RANGE.from}&to=${IC_RANGE.to}&section=${section}`);
+  document.getElementById('ic-entries-title').textContent = `${pair.a_code} ↔ ${pair.b_code}: ${section === 'pl' ? 'profit & loss entries' : 'balance sheet entries'}`;
+  document.getElementById('ic-entries-hint').textContent =
+    section === 'pl' ? `Entries dated ${IC_RANGE.from} to ${IC_RANGE.to} that each company booked with the other.` : `Everything each company booked with the other up to ${IC_RANGE.to}.`;
+  const dr = rows.reduce((t, x) => t + x.debit, 0);
+  const cr = rows.reduce((t, x) => t + x.credit, 0);
+  document.getElementById('ic-entries-table').innerHTML =
+    `<thead><tr><th>Date</th><th>Company</th><th>Account</th><th>Reference</th><th>Description</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>` +
+    rows
+      .map(
+        (x) => `<tr><td>${esc(x.entry_date)}</td><td><span class="entity-tag">${esc(x.entity_code)}</span></td><td>${acctLink(x.account_code, x.account_name)}</td>
+        <td>${esc(x.reference || '')}</td><td>${esc(x.description)}</td><td class="num">${x.debit ? fmt(x.debit) : ''}</td><td class="num">${x.credit ? fmt(x.credit) : ''}</td></tr>`
+      )
+      .join('') +
+    `<tr class="total"><td colspan="5">Total</td><td class="num">${fmt(dr)}</td><td class="num">${fmt(cr)}</td></tr></tbody>`;
+  document.getElementById('dialog-ic-entries').showModal();
 }
 
 // ---------- VAT returns (HMRC) ----------
@@ -1459,6 +1695,8 @@ async function downloadVatReturn(id) {
 
 async function loadSetup() {
   await Promise.all([loadAccounts(), loadParties()]);
+  META.entities = await api('/api/entities');
+  renderEntities();
   document.getElementById('period-error').textContent = '';
   const catOptions = (selected, bankOnly) =>
     META.categories
@@ -1490,7 +1728,7 @@ async function loadSetup() {
   });
 
   document.querySelector('#customers-table tbody').innerHTML = CUSTOMERS.map(
-    (p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
+    (p) => `<tr><td>${esc(p.name)}${p.group_entity_code ? ` <span class="entity-tag" title="Intercompany">Group · ${esc(p.group_entity_code)}</span>` : ''}</td><td>${esc(p.country || '')}</td><td>${p.currency}</td><td>${esc(p.vat_number || '')}</td>
       <td class="nowrap"><button class="btn btn-small" data-edit-party="customer" data-id="${p.id}">Edit</button></td></tr>`
   ).join('');
   document.querySelectorAll('[data-edit-party]').forEach((btn) =>
@@ -1597,8 +1835,11 @@ function openPartyDialog(kind, party) {
   const noun = kind === 'customer' ? 'customer' : 'supplier';
   document.getElementById('party-dialog-title').textContent = party ? `Edit ${noun}` : `New ${noun}`;
   document.getElementById('party-error').textContent = '';
+  partyForm.group_entity_id.innerHTML =
+    '<option value="">Not a group company</option>' + META.entities.map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('');
   if (party) {
     for (const f of ['name', 'country', 'vat_number', 'sort_code', 'account_number', 'iban', 'bic']) partyForm[f].value = party[f] || '';
+    partyForm.group_entity_id.value = party.group_entity_id || '';
   }
   document.getElementById('dialog-party').showModal();
 }
@@ -1616,6 +1857,7 @@ partyForm.addEventListener('submit', async (e) => {
     account_number: partyForm.account_number.value.trim(),
     iban: partyForm.iban.value.trim(),
     bic: partyForm.bic.value.trim(),
+    group_entity_id: partyForm.group_entity_id.value || null,
   };
   const base = partyKind === 'customer' ? '/api/customers' : '/api/suppliers';
   try {
@@ -1643,7 +1885,7 @@ function renderCostCenterTable(r) {
     const total = cols.reduce((t, c) => t + c[key], 0);
     return `<tr class="${cls}"><td>${esc(label)}</td>${cols.map((c) => `<td class="num">${fmt(c[key])}</td>`).join('')}<td class="num">${fmt(total)}</td></tr>`;
   };
-  const cat = (key) => r.categories.find((c) => c.key === key).name;
+  const cat = (key) => (FIN_PROFILE.labels && FIN_PROFILE.labels[key]) || r.categories.find((c) => c.key === key).name;
   table.innerHTML =
     head +
     '<tbody>' +
@@ -3635,7 +3877,7 @@ async function loadSuppliersPage() {
     const s = stats[p.id] || { count: 0, open: 0, outstanding: 0 };
     const l = learned[p.id];
     return `<tr>
-      <td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.country || '')}</div></td>
+      <td><strong>${esc(p.name)}</strong>${p.group_entity_code ? ` <span class="entity-tag" title="Intercompany">Group · ${esc(p.group_entity_code)}</span>` : ''}<div class="muted">${esc(p.country || '')}</div></td>
       <td>${p.currency}</td>
       <td class="muted">${esc(p.vat_number || '')}</td>
       <td class="muted">${esc(bankDetailsText(p) || 'none')}</td>
@@ -3891,6 +4133,12 @@ async function startApp() {
   }
 }
 
+function fillEntitySelect() {
+  const sel = document.getElementById('entity-select');
+  sel.innerHTML = META.entities.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('') + '<option value="">All entities (group)</option>';
+  sel.value = CURRENT_ENTITY;
+}
+
 async function finishStart() {
   document.body.classList.add(`role-${CURRENT_USER.role}`);
   document.getElementById('user-menu').hidden = false;
@@ -3908,8 +4156,7 @@ async function finishStart() {
     /* remembering the entity is optional */
   }
   CURRENT_ENTITY = saved !== null && (saved === '' || META.entities.some((e) => String(e.id) === saved)) ? saved : String(META.entities[0].id);
-  sel.innerHTML = META.entities.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('') + '<option value="">All entities</option>';
-  sel.value = CURRENT_ENTITY;
+  fillEntitySelect();
   sel.addEventListener('change', () => {
     CURRENT_ENTITY = sel.value;
     try {

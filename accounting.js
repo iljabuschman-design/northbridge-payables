@@ -16,12 +16,17 @@ const CATEGORIES = [
   { key: 'fixed_assets', name: 'Fixed assets', statement: 'BS', side: 'asset', cashflow: 'investing' },
   // Contra-asset: shown (negative) under assets; its movement is depreciation, a non-cash item.
   { key: 'accumulated_depreciation', name: 'Accumulated depreciation', statement: 'BS', side: 'asset', cashflow: 'operating', cf_label: 'Add back: depreciation (non-cash)' },
+  // Loans to other companies (intercompany loans): a movement is an investing cash flow.
+  { key: 'financial_assets', name: 'Loans & financial assets', statement: 'BS', side: 'asset', cashflow: 'investing' },
+  { key: 'inventory', name: 'Inventory', statement: 'BS', side: 'asset', cashflow: 'operating' },
   { key: 'receivables', name: 'Trade receivables', statement: 'BS', side: 'asset', cashflow: 'operating' },
   { key: 'other_current_assets', name: 'Other current assets', statement: 'BS', side: 'asset', cashflow: 'operating' },
   { key: 'cash', name: 'Cash & bank', statement: 'BS', side: 'asset', cashflow: 'cash' },
   { key: 'equity', name: 'Equity', statement: 'BS', side: 'equity', cashflow: 'financing' },
   { key: 'payables', name: 'Trade payables', statement: 'BS', side: 'liability', cashflow: 'operating' },
   { key: 'other_current_liabilities', name: 'Other current liabilities', statement: 'BS', side: 'liability', cashflow: 'operating' },
+  // Mortgages and loans from other group companies.
+  { key: 'long_term_liabilities', name: 'Long-term liabilities', statement: 'BS', side: 'liability', cashflow: 'financing' },
   { key: 'revenue', name: 'Revenue', statement: 'PL', side: 'income', cashflow: null },
   { key: 'cost_of_sales', name: 'Cost of sales', statement: 'PL', side: 'expense', cashflow: null },
   { key: 'overheads', name: 'Overheads', statement: 'PL', side: 'expense', cashflow: null },
@@ -49,6 +54,8 @@ const ROLES = {
   REIMBURSEMENTS: 'employee_expenses_payable',
 };
 
+const clean = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -61,12 +68,35 @@ async function getCompany() {
 
 // ---------- Entities ----------
 
+const ENTITY_TYPES = {
+  holding: 'Holding company',
+  trading: 'Trading company',
+  manufacturing: 'Manufacturing',
+  services: 'Shared services',
+  property: 'Property',
+  distribution: 'Distribution',
+  other: 'Other',
+};
+
+function decorateEntity(e) {
+  if (!e) return e;
+  const parse = (v, fallback) => {
+    try {
+      return v ? JSON.parse(v) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const { labels_json, hide_json, ...rest } = e;
+  return { ...rest, type_name: ENTITY_TYPES[e.entity_type] || e.entity_type || '', labels: parse(labels_json, {}), hide: parse(hide_json, []) };
+}
+
 async function listEntities() {
-  return (await db.all('SELECT * FROM entities ORDER BY id'));
+  return (await db.all('SELECT * FROM entities ORDER BY id')).map(decorateEntity);
 }
 
 async function getEntity(id) {
-  return (await db.get('SELECT * FROM entities WHERE id = ?', Number(id)));
+  return decorateEntity(await db.get('SELECT * FROM entities WHERE id = ?', Number(id)));
 }
 
 async function requireEntity(id) {
@@ -75,13 +105,64 @@ async function requireEntity(id) {
   return e;
 }
 
-async function createEntity({ code, name }) {
+/** Validate the profile fields of an entity and return them as column values. */
+async function entityProfile(data, selfId = null) {
+  const type = data.entity_type ? String(data.entity_type) : null;
+  if (type && !ENTITY_TYPES[type]) throw httpError(400, 'Unknown company type');
+  const currency = clean(data.main_currency);
+  if (currency && !CURRENCIES.includes(currency)) throw httpError(400, 'Unsupported currency');
+  let parentId = data.parent_id ? Number(data.parent_id) : null;
+  if (parentId) {
+    if (parentId === selfId) throw httpError(400, 'A company cannot own itself');
+    await requireEntity(parentId);
+    // No loops in the ownership chain.
+    for (let p = await getEntity(parentId); p && selfId; p = p.parent_id ? await getEntity(p.parent_id) : null) {
+      if (p.id === selfId) throw httpError(400, 'That would make the ownership structure circular');
+    }
+  }
+  let pct = parentId ? Number(data.ownership_pct ?? 100) : null;
+  if (parentId && !(pct > 0 && pct <= 100)) throw httpError(400, 'Ownership must be between 0 and 100%');
+  const labels = data.labels && typeof data.labels === 'object' ? data.labels : {};
+  for (const k of Object.keys(labels)) if (!CATEGORY_BY_KEY[k]) throw httpError(400, `Unknown reporting category ${k}`);
+  const hide = Array.isArray(data.hide) ? data.hide.filter((k) => CATEGORY_BY_KEY[k]) : [];
+  return {
+    entity_type: type,
+    country: clean(data.country),
+    framework: clean(data.framework),
+    main_currency: currency,
+    parent_id: parentId,
+    ownership_pct: pct,
+    labels_json: Object.keys(labels).length ? JSON.stringify(labels) : null,
+    hide_json: hide.length ? JSON.stringify(hide) : null,
+  };
+}
+
+async function createEntity({ code, name, ...profile }) {
   code = String(code || '').trim().toUpperCase();
   name = String(name || '').trim();
   if (!/^[A-Z0-9-]{1,10}$/.test(code)) throw httpError(400, 'Entity code must be 1-10 letters/digits');
   if (!name) throw httpError(400, 'Entity name is required');
-  const info = (await db.run('INSERT INTO entities (code, name) VALUES (?, ?)', code, name));
+  if (await db.get('SELECT 1 FROM entities WHERE code = ?', code)) throw httpError(400, `Entity ${code} already exists`);
+  const p = await entityProfile(profile);
+  const info = (await db.run(
+    `INSERT INTO entities (code, name, entity_type, country, framework, main_currency, parent_id, ownership_pct, labels_json, hide_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    code, name, p.entity_type, p.country, p.framework, p.main_currency, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json
+  ));
   return (await getEntity(Number(info.lastInsertRowid)));
+}
+
+async function updateEntity(id, { name, ...profile }) {
+  const existing = await getEntity(id);
+  if (!existing) throw httpError(404, 'Entity not found');
+  if (name !== undefined && !String(name).trim()) throw httpError(400, 'Entity name is required');
+  const p = await entityProfile({ ...existing, ...profile }, existing.id);
+  await db.run(
+    `UPDATE entities SET name = ?, entity_type = ?, country = ?, framework = ?, main_currency = ?, parent_id = ?, ownership_pct = ?, labels_json = ?, hide_json = ? WHERE id = ?`,
+    name !== undefined ? String(name).trim() : existing.name,
+    p.entity_type, p.country, p.framework, p.main_currency, p.parent_id, p.ownership_pct, p.labels_json, p.hide_json, existing.id
+  );
+  return (await getEntity(existing.id));
 }
 
 /** Entity filter from a request: null means all entities together (no intercompany elimination). */
@@ -179,14 +260,20 @@ async function requireAccount(code) {
 const PARTY_TABLE = { supplier: 'suppliers', customer: 'customers' };
 
 async function listParties(kind) {
-  return (await db.all(`SELECT * FROM ${PARTY_TABLE[kind]} ORDER BY name`));
+  return (await db.all(`SELECT p.*, g.code AS group_entity_code, g.name AS group_entity_name
+       FROM ${PARTY_TABLE[kind]} p LEFT JOIN entities g ON g.id = p.group_entity_id ORDER BY p.name`));
 }
 
 async function getParty(kind, id) {
   return (await db.get(`SELECT * FROM ${PARTY_TABLE[kind]} WHERE id = ?`, id));
 }
 
-const clean = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim());
+/** The group company a customer/supplier stands for (intercompany), as an id or null. */
+async function groupEntityOf(data) {
+  const id = data.group_entity_id ? Number(data.group_entity_id) : null;
+  if (id) await requireEntity(id);
+  return id;
+}
 
 function partyFields({ name, country, currency, vat_number, sort_code, account_number, iban, bic }) {
   if (!name || !String(name).trim()) throw httpError(400, 'Name is required');
@@ -208,13 +295,17 @@ function partyFields({ name, country, currency, vat_number, sort_code, account_n
 }
 
 async function createParty(kind, data) {
-  const info = (await db.run(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number, sort_code, account_number, iban, bic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, ...partyFields(data)));
+  const fields = partyFields(data);
+  const group = await groupEntityOf(data);
+  const info = (await db.run(`INSERT INTO ${PARTY_TABLE[kind]} (name, country, currency, vat_number, sort_code, account_number, iban, bic, group_entity_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, ...fields, group));
   return (await getParty(kind, Number(info.lastInsertRowid)));
 }
 
 async function updateParty(kind, id, data) {
   if (!(await getParty(kind, id))) throw httpError(404, `${kind} not found`);
-  (await db.run(`UPDATE ${PARTY_TABLE[kind]} SET name = ?, country = ?, currency = ?, vat_number = ?, sort_code = ?, account_number = ?, iban = ?, bic = ? WHERE id = ?`, ...partyFields(data), id));
+  const fields = partyFields(data);
+  const group = await groupEntityOf(data);
+  (await db.run(`UPDATE ${PARTY_TABLE[kind]} SET name = ?, country = ?, currency = ?, vat_number = ?, sort_code = ?, account_number = ?, iban = ?, bic = ?, group_entity_id = ? WHERE id = ?`, ...fields, group, id));
   return (await getParty(kind, id));
 }
 
@@ -347,6 +438,12 @@ async function checkJournalLines(posted, entityId) {
     l.cost_center = (await resolveCostCenter(account, l.cost_center));
     if (l.debit < 0 || l.credit < 0) throw httpError(400, 'Debit and credit amounts cannot be negative');
     if (l.debit && l.credit) throw httpError(400, 'A line can have a debit or a credit, not both');
+    // Intercompany: the other group company this line is with (never the entity itself).
+    l.counterparty_entity_id = l.counterparty_entity_id ? Number(l.counterparty_entity_id) : null;
+    if (l.counterparty_entity_id) {
+      if (l.counterparty_entity_id === Number(entityId)) throw httpError(400, 'The counterparty of a line cannot be the entity itself');
+      if (!(await getEntity(l.counterparty_entity_id))) throw httpError(400, 'Unknown counterparty company');
+    }
   }
   const dr = round2(posted.reduce((s, l) => s + l.debit, 0));
   const cr = round2(posted.reduce((s, l) => s + l.credit, 0));
@@ -354,10 +451,10 @@ async function checkJournalLines(posted, entityId) {
 }
 
 async function insertLedgerLines(journalId, entityId, date, description, posted) {
-  const insert = db.statement(`INSERT INTO ledger_entries (journal_id, entity_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center, invoice_line_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insert = db.statement(`INSERT INTO ledger_entries (journal_id, entity_id, entry_date, account_code, debit, credit, currency, fx_note, description, cost_center, invoice_line_id, counterparty_entity_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const l of posted) {
-    (await insert.run(journalId, entityId, date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center, l.invoice_line_id || null));
+    (await insert.run(journalId, entityId, date, l.account_code, l.debit, l.credit, l.currency || null, l.fx_note || null, l.description || description, l.cost_center, l.invoice_line_id || null, l.counterparty_entity_id || null));
   }
 }
 
@@ -379,6 +476,7 @@ async function createManualJournal({ entity_id, journal_date, reference, descrip
     account_code: l.account_code,
     description: l.description ? String(l.description).trim() : null,
     cost_center: l.cost_center || null,
+    counterparty_entity_id: l.counterparty_entity_id ? Number(l.counterparty_entity_id) : null,
     debit: round2(Number(l.debit) || 0),
     credit: round2(Number(l.credit) || 0),
   }));
@@ -436,7 +534,8 @@ async function getJournal(id) {
 }
 
 async function ledgerEntriesForJournal(journalId) {
-  return (await db.all(`SELECT l.*, a.name AS account_name FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
+  return (await db.all(`SELECT l.*, a.name AS account_name, cp.code AS counterparty_code FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
+       LEFT JOIN entities cp ON cp.id = l.counterparty_entity_id
        WHERE l.journal_id = ? ORDER BY l.id`, journalId));
 }
 
@@ -451,9 +550,9 @@ async function listJournals(entityId) {
 
 async function listLedgerEntries(entityId) {
   const E = entityOf(entityId);
-  return (await db.all(`SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code
+  return (await db.all(`SELECT l.*, a.name AS account_name, j.source_type, j.reference, e.code AS entity_code, cp.code AS counterparty_code
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code JOIN journals j ON j.id = l.journal_id
-       JOIN entities e ON e.id = l.entity_id
+       JOIN entities e ON e.id = l.entity_id LEFT JOIN entities cp ON cp.id = l.counterparty_entity_id
        WHERE (?::int IS NULL OR l.entity_id = ?)
        ORDER BY l.entry_date, l.id`, E, E));
 }
@@ -491,6 +590,9 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
   const company = (await getCompany());
   const party = (await getParty(INVOICE_KIND[type], party_id));
   if (!party) throw httpError(400, `Unknown ${INVOICE_KIND[type]}`);
+  // A customer/supplier that is another group company makes this an intercompany invoice.
+  const counterparty = party.group_entity_id ? Number(party.group_entity_id) : null;
+  if (counterparty === entity.id) throw httpError(400, `${party.name} is ${entity.name} itself: choose another party for this invoice`);
   if (!invoice_number || !invoice_date) throw httpError(400, 'Invoice number and date are required');
   due_date = due_date || null;
   if (due_date && (!/^\d{4}-\d{2}-\d{2}$/.test(due_date) || due_date < invoice_date)) throw httpError(400, 'The due date must be on or after the invoice date');
@@ -569,6 +671,7 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
       account_code: l.account_code,
       cost_center: l.cost_center,
       invoice_line_id: l.id,
+      counterparty_entity_id: counterparty,
       [isPurchase ? 'debit' : 'credit']: l.base_net,
       currency,
       fx_note: note(l.net_amount),
@@ -587,6 +690,7 @@ async function createInvoice({ entity_id, type, party_id, invoice_number, invoic
     }
     journalLines.push({
       account_code: (await accountByRole(isPurchase ? ROLES.AP : ROLES.AR)).code,
+      counterparty_entity_id: counterparty,
       [isPurchase ? 'credit' : 'debit']: base_total,
       currency,
       fx_note: note(total_amount),
@@ -717,10 +821,12 @@ async function createPayment({ invoice_id, payment_date, amount, bank_account, b
 
     const desc = `${isPurchase ? 'Payment' : 'Receipt'} ${amount.toFixed(2)} ${invoice.currency} - ${isPurchase ? 'purchase' : 'sales'} invoice ${invoice.invoice_number} (${invoice.party_name})`;
     const partyAcc = (await accountByRole(isPurchase ? ROLES.AP : ROLES.AR)).code;
+    const party = await getParty(INVOICE_KIND[invoice.type], invoice.party_id);
+    const counterparty = party && party.group_entity_id ? Number(party.group_entity_id) : null;
     const reliefNote = invoice.currency === company.base_currency ? null : `${amount.toFixed(2)} ${invoice.currency} @ ${invoice.exchange_rate} (booked rate)`;
     const cashNote = bank.bank_currency === company.base_currency ? null : `${bank_amount.toFixed(2)} ${bank.bank_currency} @ ${bank_rate}`;
     const lines = [
-      { account_code: partyAcc, [isPurchase ? 'debit' : 'credit']: base_relief, currency: invoice.currency, fx_note: reliefNote, description: desc },
+      { account_code: partyAcc, counterparty_entity_id: counterparty, [isPurchase ? 'debit' : 'credit']: base_relief, currency: invoice.currency, fx_note: reliefNote, description: desc },
       { account_code: bank.code, [isPurchase ? 'credit' : 'debit']: base_cash, currency: bank.bank_currency, fx_note: cashNote, description: desc },
     ];
     if (fx_gain_loss > 0) {
@@ -788,17 +894,26 @@ function plTotals(t) {
  * Amounts are shown with their natural sign (assets/expenses as debits,
  * liabilities/equity/income as credits). A cost centre filter narrows the
  * P&L only; the balance sheet and cash flow always cover the whole company.
+ *
+ * With all entities selected, `consolidated` leaves out every entry that is
+ * with another group company (it carries a counterparty): intercompany
+ * revenue and cost, receivables and payables, loans, and investments against
+ * the subsidiaries' share capital. What is left is the group's position with
+ * the outside world. Intercompany balances that don't agree show up as an
+ * "unreconciled difference" on the balance sheet (see intercompany.js).
  */
-async function financialStatements({ from, to, cost_center, entity_id }) {
+async function financialStatements({ from, to, cost_center, entity_id, consolidated }) {
   checkRange(from, to);
   const E = entityOf(entity_id);
+  const C = E === null && consolidated ? 1 : 0;
 
   const rows = (await db.all(`SELECT a.code, a.name, a.category,
          COALESCE(SUM(CASE WHEN ${OPENING_SQL} THEN l.debit - l.credit END), 0) AS opening,
          COALESCE(SUM(CASE WHEN ${MOVEMENT_SQL} THEN l.debit - l.credit END), 0) AS movement
        FROM accounts a LEFT JOIN ledger_entries l ON l.account_code = a.code AND (?::int IS NULL OR l.entity_id = ?)
+         AND (?::int = 0 OR l.counterparty_entity_id IS NULL)
        LEFT JOIN journals j ON j.id = l.journal_id
-       GROUP BY a.code ORDER BY a.code`, from, to, from, to, E, E))
+       GROUP BY a.code ORDER BY a.code`, from, to, from, to, E, E, C))
     .map((r) => ({ ...r, opening: round2(r.opening), movement: round2(r.movement), closing: round2(r.opening + r.movement) }));
 
   const signFor = (cat) => (cat.side === 'asset' || cat.side === 'expense' ? 1 : -1);
@@ -820,7 +935,8 @@ async function financialStatements({ from, to, cost_center, entity_id }) {
     const f = costCenterFilter(cost_center);
     const filtered = Object.fromEntries(
       (await db.all(`SELECT l.account_code AS code, SUM(l.debit - l.credit) AS movement FROM ledger_entries l
-           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)${f.sql} GROUP BY l.account_code`, from, to, E, E, ...f.params))
+           WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)
+             AND (?::int = 0 OR l.counterparty_entity_id IS NULL)${f.sql} GROUP BY l.account_code`, from, to, E, E, C, ...f.params))
         .map((r) => [r.code, round2(r.movement)])
     );
     plMovement = (r) => filtered[r.code] || 0;
@@ -843,8 +959,20 @@ async function financialStatements({ from, to, cost_center, entity_id }) {
     equity.total = round2(equity.total + result);
     const liabilities = cats((c) => c.side === 'liability').map((c) => group(c, pick));
     const total_assets = round2(assets.reduce((t, g) => t + g.total, 0));
-    const total_equity_liabilities = round2(equity.total + liabilities.reduce((t, g) => t + g.total, 0));
-    return { assets, equity, liabilities, total_assets, total_equity_liabilities, balanced: Math.abs(total_assets - total_equity_liabilities) < 0.01 };
+    let total_equity_liabilities = round2(equity.total + liabilities.reduce((t, g) => t + g.total, 0));
+    // Consolidated: whatever doesn't balance once intercompany is left out is an intercompany difference.
+    let intercompany_difference = 0;
+    if (C) {
+      intercompany_difference = round2(total_assets - total_equity_liabilities);
+      liabilities.push({
+        key: 'intercompany_difference',
+        name: 'Unreconciled intercompany differences',
+        accounts: intercompany_difference ? [{ code: '', name: 'Intercompany items that do not agree (see Intercompany)', amount: intercompany_difference }] : [],
+        total: intercompany_difference,
+      });
+      total_equity_liabilities = round2(total_equity_liabilities + intercompany_difference);
+    }
+    return { assets, equity, liabilities, total_assets, total_equity_liabilities, intercompany_difference, balanced: Math.abs(total_assets - total_equity_liabilities) < 0.01 };
   };
 
   // Cash flow (indirect): start from the result and reverse out the
@@ -857,6 +985,18 @@ async function financialStatements({ from, to, cost_center, entity_id }) {
     return { key: cat.key, name: cat.cf_label || `Change in ${cat.name.toLowerCase()}`, accounts, total: round2(accounts.reduce((t, a) => t + a.amount, 0)) };
   };
   const operatingItems = cats((c) => c.cashflow === 'operating').map(cfGroup);
+  // Consolidated: the plug for intercompany items that don't agree moves like any other liability.
+  if (C) {
+    const open = balanceSheet((r) => r.opening).intercompany_difference;
+    const close = balanceSheet((r) => r.closing).intercompany_difference;
+    const change = round2(close - open);
+    operatingItems.push({
+      key: 'intercompany_difference',
+      name: 'Change in unreconciled intercompany differences',
+      accounts: change ? [{ code: '', name: 'Intercompany items that do not agree (see Intercompany)', amount: change }] : [],
+      total: change,
+    });
+  }
   const operating = round2(net_result + operatingItems.reduce((t, g) => t + g.total, 0));
   const investingItems = cats((c) => c.cashflow === 'investing').map(cfGroup);
   const investing = round2(investingItems.reduce((t, g) => t + g.total, 0));
@@ -873,6 +1013,7 @@ async function financialStatements({ from, to, cost_center, entity_id }) {
     opening_date: dayBefore(from),
     cost_center: cost_center || null,
     entity: E ? (await getEntity(E)) : null,
+    consolidated: Boolean(C),
     profit_and_loss: {
       ...pl,
       ...totals,
@@ -902,13 +1043,15 @@ async function financialStatements({ from, to, cost_center, entity_id }) {
  * P&L per cost centre for a period: one column per cost centre (plus
  * "unallocated"), one row per P&L category, with the subtotals.
  */
-async function costCenterReport({ from, to, entity_id }) {
+async function costCenterReport({ from, to, entity_id, consolidated }) {
   checkRange(from, to);
   const E = entityOf(entity_id);
+  const C = E === null && consolidated ? 1 : 0;
   const rows = (await db.all(`SELECT COALESCE(l.cost_center, '') AS cc, a.category, SUM(l.debit - l.credit) AS movement
        FROM ledger_entries l JOIN accounts a ON a.code = l.account_code
        WHERE l.entry_date >= ? AND l.entry_date <= ? AND (?::int IS NULL OR l.entity_id = ?)
-       GROUP BY cc, a.category`, from, to, E, E));
+         AND (?::int = 0 OR l.counterparty_entity_id IS NULL)
+       GROUP BY cc, a.category`, from, to, E, E, C));
   const plCats = CATEGORIES.filter((c) => c.statement === 'PL');
   const columns = [...(await listCostCenters()).map((c) => ({ code: c.code, name: c.name })), { code: '', name: 'Unallocated' }];
   const byCc = {};
@@ -944,8 +1087,8 @@ async function kpis({ from, to, entity_id }) {
   const cat = (list, key) => (list.find((g) => g.key === key) || { total: 0 }).total;
   const cash = cat(bs.assets, 'cash');
   const receivables = cat(bs.assets, 'receivables');
-  const current_assets = round2(receivables + cat(bs.assets, 'other_current_assets') + cash);
-  const current_liabilities = round2(bs.liabilities.reduce((t, g) => t + g.total, 0));
+  const current_assets = round2(receivables + cat(bs.assets, 'inventory') + cat(bs.assets, 'other_current_assets') + cash);
+  const current_liabilities = round2(bs.liabilities.filter((g) => g.key !== 'long_term_liabilities').reduce((t, g) => t + g.total, 0));
   const payables = cat(bs.liabilities, 'payables');
   const equity = bs.equity.total;
   const days = daysBetween(from, to);
@@ -1338,6 +1481,7 @@ async function editJournal(id, data, editedBy = null) {
           return {
             account_code: l.account_code,
             cost_center: l.cost_center || null,
+            counterparty_entity_id: l.counterparty_entity_id ? Number(l.counterparty_entity_id) : null,
             description: l.description ? String(l.description).trim() : null,
             debit,
             credit,
@@ -1490,6 +1634,9 @@ module.exports = {
   getEntity,
   requireEntity,
   createEntity,
+  updateEntity,
+  ENTITY_TYPES,
+  CATEGORY_BY_KEY,
   entityOf,
   assertAccountForEntity,
   editJournal,
