@@ -1498,9 +1498,10 @@ let editingEntity = null;
 const LABEL_FIELDS = ['revenue', 'cost_of_sales', 'overheads', 'fixed_assets'];
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-/** "January - December" for a year ending in December, "June - May" for one ending in May. */
+/** "Calendar year" for a year ending in December, otherwise e.g. "Jun - May". */
 function financialYearText(endMonth) {
   const m = Number(endMonth);
+  if (m === 12) return 'Calendar year';
   return `${MONTH_NAMES[m % 12].slice(0, 3)} - ${MONTH_NAMES[m - 1].slice(0, 3)}`;
 }
 
@@ -1548,7 +1549,7 @@ function openEntityDialog(entity) {
     '<option value="">Top of the group</option>' +
     META.entities.filter((e) => !entity || e.id !== entity.id).map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`).join('');
   entityForm.year_end_month.innerHTML =
-    '<option value="">Not set</option>' + MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m} (year runs ${financialYearText(i + 1)})</option>`).join('');
+    '<option value="">Not set</option>' + MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${i === 11 ? 'December (calendar year)' : `${m} (year runs ${financialYearText(i + 1)})`}</option>`).join('');
   entityForm.consolidation_of.innerHTML = META.entities
     .filter((e) => !e.is_consolidation && (!entity || e.id !== entity.id))
     .map((e) => `<option value="${e.id}">${esc(e.code)} · ${esc(e.name)}</option>`)
@@ -1624,7 +1625,7 @@ function orgCard(e, ownedPct) {
     <span class="org-name">${esc(e.name)}</span>
     <span class="org-type">${esc(e.type_name || '')}</span>
     <span class="org-meta">${esc(e.country || '')}${e.main_currency ? ` · ${esc(e.main_currency)}` : ''}</span>
-    <span class="org-meta">${e.year_end_month ? `Year ${esc(financialYearText(e.year_end_month))}` : ''}${e.framework ? ` · ${esc(e.framework)}` : ''}</span>
+    <span class="org-meta">${e.year_end_month ? (e.year_end_month === 12 ? 'Calendar year' : `Year ${esc(financialYearText(e.year_end_month))}`) : ''}${e.framework ? ` · ${esc(e.framework)}` : ''}</span>
   </button>`;
 }
 
