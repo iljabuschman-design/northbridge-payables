@@ -502,11 +502,40 @@
       </form>
     </div>
 
+    <div class="panel" style="margin-top:16px;" id="hmrc-panel">
+      <div class="panel-header wrap">
+        <h2>Connection to HMRC</h2>
+        <span id="hmrc-env"></span>
+      </div>
+      <p class="hint">Sign in once to the company's Government Gateway account on HMRC's own page to send VAT returns to HMRC directly from here, and to fetch the open VAT periods and their period keys. Each company has its own connection. The sign-in stays on HMRC's page: this app never sees the password.</p>
+      <p class="error" id="hmrc-error"></p>
+      <p class="hint pos" id="hmrc-ok"></p>
+      <div id="hmrc-status"></div>
+      <form id="form-hmrc-connect" class="upload-row admin-only" style="margin-top:10px;" hidden>
+        <label>VAT registration number <input name="vrn" maxlength="14" placeholder="123456789" required /></label>
+        <button type="submit" class="btn btn-primary">Connect to HMRC</button>
+      </form>
+      <div class="upload-row admin-only" id="hmrc-actions" style="margin-top:10px;" hidden>
+        <button type="button" class="btn" id="btn-hmrc-obligations">Fetch open VAT periods</button>
+        <button type="button" class="btn" id="btn-hmrc-disconnect">Disconnect</button>
+      </div>
+      <div class="table-wrap"><table class="table" id="hmrc-obligations-table"></table></div>
+      <div id="hmrc-sandbox" class="admin-only" hidden style="margin-top:14px;">
+        <div class="section-title">HMRC sandbox (test service)</div>
+        <p class="hint">Nothing here is real: HMRC's test service only knows made-up businesses. Create a test organisation to get a test VAT number and Government Gateway user to sign in with, then check that the fraud prevention headers this app sends are accepted.</p>
+        <div class="upload-row">
+          <button type="button" class="btn" id="btn-hmrc-testuser">Create test organisation</button>
+          <button type="button" class="btn" id="btn-hmrc-headers">Check fraud prevention headers</button>
+        </div>
+        <pre class="hmrc-output" id="hmrc-sandbox-output" hidden></pre>
+      </div>
+    </div>
+
     <div class="panel" style="margin-top:16px;">
       <h2>Filed returns</h2>
       <div class="table-wrap">
         <table class="table" id="vat-returns-table">
-          <thead><tr><th>Entity</th><th>Period</th><th>Period key</th><th>VAT number</th><th class="num">Net VAT</th><th>Due</th><th>Filed</th><th></th></tr></thead>
+          <thead><tr><th>Entity</th><th>Period</th><th>Period key</th><th>VAT number</th><th class="num">Net VAT</th><th>Due</th><th>Filed</th><th>HMRC</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

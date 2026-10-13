@@ -14,6 +14,7 @@ const reimb = require('./reimbursements');
 const mailbox = require('./mailbox');
 const vat = require('./vat');
 const intercompany = require('./intercompany');
+const hmrc = require('./hmrc');
 const { seedIfEmpty } = require('./seed');
 const { init, db } = require('./db');
 
@@ -22,6 +23,7 @@ const { init, db } = require('./db');
 const ready = init()
   .then(seedIfEmpty)
   .then(acct.setUpVatCodes)
+  .then(hmrc.setUp)
   .then(reimb.setUpReimbursements)
   .then(auth.ensureDefaultUsers)
   .then(() => {
@@ -323,6 +325,16 @@ const routes = [
   { method: 'POST', pattern: /^\/api\/vat\/returns$/, handler: json((body, m, q, req) => vat.fileReturn(body, req.user.name)) },
   { method: 'GET', pattern: /^\/api\/vat\/returns\/(\d+)\/mtd$/, handler: async (req, m) => vat.mtdExport(m[1]) },
 
+  // Direct connection to HMRC (Making Tax Digital VAT API)
+  { method: 'GET', pattern: /^\/api\/hmrc\/status$/, handler: async (req, m, q) => hmrc.status(q.get('entity'), req) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/connect$/, handler: json((body, m, q, req) => hmrc.connect(body, req, req.user)) },
+  { method: 'GET', pattern: /^\/api\/hmrc\/callback$/, handler: async (req, m, q) => ({ __redirect: await hmrc.callback(q) }) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/disconnect$/, handler: json((body) => hmrc.disconnect(body)) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/obligations$/, handler: json((body, m, q, req) => hmrc.obligations(body, req, req.user)) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/submit$/, handler: json((body, m, q, req) => hmrc.submitReturn(body, req, req.user)) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/sandbox\/test-user$/, handler: json(() => hmrc.createTestOrganisation()) },
+  { method: 'POST', pattern: /^\/api\/hmrc\/sandbox\/check-headers$/, handler: json((body, m, q, req) => hmrc.validateHeaders(body, req, req.user)) },
+
   // Exchange rates (ECB)
   {
     method: 'GET',
@@ -421,6 +433,10 @@ async function handler(req, res) {
             'X-Content-Type-Options': 'nosniff',
           });
           return res.end(f.data);
+        }
+        if (result && result.__redirect) {
+          res.writeHead(302, { Location: result.__redirect, 'Cache-Control': 'no-store' });
+          return res.end();
         }
         if (result && result.__cookie) {
           res.setHeader('Set-Cookie', result.__cookie);

@@ -19,9 +19,7 @@
  * the return; the difference is reported so it can be checked.
  *
  * "Filing" stores the return and its figures; the MTD request body can then be
- * downloaded. Submitting it to HMRC needs the app to be registered with HMRC
- * (OAuth sign-in to the business's Government Gateway account and fraud
- * prevention headers), which is not part of this demo.
+ * downloaded, or sent straight to HMRC over the API (see hmrc.js).
  */
 
 const { db, round2 } = require('./db');
@@ -184,4 +182,4 @@ async function mtdExport(id) {
   };
 }
 
-module.exports = { calculate, listReturns, getReturn, fileReturn, mtdExport, dueDate };
+module.exports = { calculate, listReturns, getReturn, fileReturn, mtdExport, mtdBody, dueDate };

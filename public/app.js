@@ -248,6 +248,7 @@ const LOADERS = {
     await loadVat();
     await loadVatCodes();
     renderVatCodes();
+    await loadHmrc();
   },
   setup: loadSetup,
 };
@@ -1670,13 +1671,206 @@ async function loadVatReturns() {
         <td class="num">${r.total_vat_due >= r.vat_reclaimed ? '' : '-'}${fmt(r.net_vat_due, BASE)}</td>
         <td>${esc(r.due_date)}</td>
         <td>${esc(String(r.filed_at).slice(0, 16))}${r.filed_by ? ` · ${esc(r.filed_by)}` : ''}</td>
-        <td><button type="button" class="btn btn-small" data-vat-download="${r.id}">Download MTD file</button></td>
+        <td>${hmrcCell(r)}</td>
+        <td class="nowrap"><button type="button" class="btn btn-small" data-vat-download="${r.id}">Download MTD file</button></td>
       </tr>`
         )
         .join('')
-    : '<tr><td colspan="8" class="muted">No VAT returns filed yet.</td></tr>';
+    : '<tr><td colspan="9" class="muted">No VAT returns filed yet.</td></tr>';
   tbody.querySelectorAll('[data-vat-download]').forEach((btn) => btn.addEventListener('click', () => downloadVatReturn(btn.dataset.vatDownload)));
+  tbody.querySelectorAll('[data-hmrc-send]').forEach((btn) => btn.addEventListener('click', () => sendToHmrc(Number(btn.dataset.hmrcSend))));
 }
+
+// ----- Direct connection to HMRC -----
+
+function hmrcClient() {
+  let id = null;
+  try {
+    id = localStorage.getItem('nb-device-id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('nb-device-id', id);
+    }
+  } catch {
+    id = id || crypto.randomUUID();
+  }
+  return {
+    device_id: id,
+    user_agent: navigator.userAgent,
+    screen_width: screen.width,
+    screen_height: screen.height,
+    pixel_ratio: window.devicePixelRatio || 1,
+    colour_depth: screen.colorDepth,
+    window_width: window.innerWidth,
+    window_height: window.innerHeight,
+    timezone_offset_minutes: new Date().getTimezoneOffset(),
+    do_not_track: navigator.doNotTrack === '1',
+  };
+}
+
+let HMRC = null;
+
+function hmrcCell(r) {
+  if (r.hmrc_submitted_at) {
+    let receipt = {};
+    try {
+      receipt = JSON.parse(r.hmrc_receipt || '{}');
+    } catch {
+      /* keep the empty receipt */
+    }
+    const ref = receipt.formBundleNumber ? `Receipt ${receipt.formBundleNumber}` : 'Received';
+    return `<span class="badge paid" title="${esc(ref)}${receipt.processingDate ? ' · processed ' + esc(receipt.processingDate) : ''}">Sent</span>
+      <div class="muted">${esc(String(r.hmrc_submitted_at).slice(0, 16))}${r.hmrc_environment === 'sandbox' ? ' · sandbox' : ''}</div>`;
+  }
+  return `<button type="button" class="btn btn-small admin-only" data-hmrc-send="${r.id}">Send to HMRC</button>`;
+}
+
+async function loadHmrc() {
+  const err = document.getElementById('hmrc-error');
+  const ok = document.getElementById('hmrc-ok');
+  const status = document.getElementById('hmrc-status');
+  // HMRC sends the browser back to /?hmrc=connected (or ?hmrc_error=...).
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('hmrc') || qs.get('hmrc_error')) {
+    err.textContent = qs.get('hmrc_error') || '';
+    ok.textContent = qs.get('hmrc') === 'connected' ? '✓ Connected to HMRC.' : '';
+    history.replaceState(null, '', location.pathname + location.hash);
+  } else {
+    err.textContent = '';
+    ok.textContent = '';
+  }
+  document.getElementById('hmrc-obligations-table').innerHTML = '';
+  const connectForm = document.getElementById('form-hmrc-connect');
+  const actions = document.getElementById('hmrc-actions');
+  const sandbox = document.getElementById('hmrc-sandbox');
+  if (!CURRENT_ENTITY) {
+    status.innerHTML = '<p class="hint">Choose a company in the top bar: each company has its own connection to HMRC.</p>';
+    connectForm.hidden = actions.hidden = sandbox.hidden = true;
+    return;
+  }
+  HMRC = await api('/api/hmrc/status');
+  document.getElementById('hmrc-env').innerHTML = `<span class="badge ${HMRC.environment === 'production' ? 'bad' : 'partial'}">${HMRC.environment === 'production' ? 'Live HMRC service' : 'Sandbox (test)'}</span>`;
+  const c = HMRC.connection;
+  if (!HMRC.configured) {
+    status.innerHTML = `<p class="hint neg">HMRC access is not set up on the server yet. Register the application in the HMRC Developer Hub, then set <code>HMRC_CLIENT_ID</code> and <code>HMRC_CLIENT_SECRET</code> as environment variables on the server (and optionally <code>HMRC_ENV=production</code>).
+      Register this redirect URI on the HMRC application: <code>${esc(HMRC.redirect_uri)}</code></p>`;
+  } else if (c) {
+    status.innerHTML = `<p><span class="badge paid">Connected</span> ${esc(entityName(CURRENT_ENTITY))} · VAT number GB ${esc(c.vrn)}
+      <span class="muted">· by ${esc(c.connected_by || '?')} on ${esc(String(c.connected_at).slice(0, 16))}</span></p>
+      ${c.wrong_environment ? `<p class="hint neg">This connection was made on the ${esc(c.environment)} service, which is not the one in use now: connect again.</p>` : ''}`;
+  } else {
+    status.innerHTML = `<p><span class="badge open">Not connected</span> ${esc(entityName(CURRENT_ENTITY))}</p>
+      <p class="hint">Redirect URI to register on the HMRC application: <code>${esc(HMRC.redirect_uri)}</code></p>`;
+  }
+  connectForm.hidden = !HMRC.configured || !!c;
+  actions.hidden = !c;
+  sandbox.hidden = !(HMRC.configured && HMRC.environment === 'sandbox');
+}
+
+document.getElementById('form-hmrc-connect').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('hmrc-error');
+  err.textContent = '';
+  try {
+    const r = await post('/api/hmrc/connect', { entity_id: Number(CURRENT_ENTITY), vrn: e.target.vrn.value });
+    window.location.href = r.url;
+  } catch (e2) {
+    err.textContent = e2.message;
+  }
+});
+
+document.getElementById('btn-hmrc-disconnect').addEventListener('click', async () => {
+  if (!confirm('Disconnect this company from HMRC? You will need to sign in again to send returns.')) return;
+  try {
+    await post('/api/hmrc/disconnect', { entity_id: Number(CURRENT_ENTITY) });
+    await loadHmrc();
+  } catch (e) {
+    document.getElementById('hmrc-error').textContent = e.message;
+  }
+});
+
+document.getElementById('btn-hmrc-obligations').addEventListener('click', async () => {
+  const err = document.getElementById('hmrc-error');
+  const table = document.getElementById('hmrc-obligations-table');
+  err.textContent = '';
+  try {
+    const r = await post('/api/hmrc/obligations', { entity_id: Number(CURRENT_ENTITY), client: hmrcClient() });
+    table.innerHTML =
+      `<thead><tr><th>Period</th><th>Period key</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>` +
+      (r.obligations
+        .map(
+          (o) => `<tr><td>${esc(o.start)} to ${esc(o.end)}</td><td><strong>${esc(o.period_key)}</strong></td><td>${esc(o.due)}</td>
+            <td>${o.status === 'F' ? `<span class="badge paid">Fulfilled</span> <span class="muted">${esc(o.received || '')}</span>` : '<span class="badge open">Open</span>'}</td>
+            <td>${o.status === 'O' ? `<button type="button" class="btn btn-small admin-only" data-hmrc-use="${esc(o.period_key)}" data-start="${esc(o.start)}" data-end="${esc(o.end)}">Use for filing</button>` : ''}</td></tr>`
+        )
+        .join('') || '<tr><td colspan="5" class="muted">HMRC lists no VAT periods.</td></tr>') +
+      '</tbody>';
+    table.querySelectorAll('[data-hmrc-use]').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const opt = (sel, v) => [...sel.options].some((o) => o.value === v);
+        if (opt(vatForm.from, btn.dataset.start.slice(0, 7))) vatForm.from.value = btn.dataset.start.slice(0, 7);
+        if (opt(vatForm.to, btn.dataset.end.slice(0, 7))) vatForm.to.value = btn.dataset.end.slice(0, 7);
+        await calculateVat();
+        vatFileForm.vrn.value = r.vrn;
+        vatFileForm.period_key.value = btn.dataset.hmrcUse;
+        vatFileForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      })
+    );
+  } catch (e) {
+    err.textContent = e.message;
+  }
+});
+
+async function sendToHmrc(id) {
+  const err = document.getElementById('hmrc-error');
+  const ok = document.getElementById('hmrc-ok');
+  err.textContent = '';
+  ok.textContent = '';
+  const live = HMRC && HMRC.environment === 'production';
+  const msg = live
+    ? 'This sends the VAT return to HMRC for real. A submitted return cannot be undone from here. Send it now?'
+    : 'Send this VAT return to HMRC\'s sandbox (test service)?';
+  if (!confirm(msg)) return;
+  try {
+    const r = await post('/api/hmrc/submit', { return_id: id, client: hmrcClient(), confirm_production: live });
+    const n = r.receipt && r.receipt.formBundleNumber;
+    ok.textContent = `✓ HMRC received the return${n ? ` (receipt ${n})` : ''}.`;
+    await loadVatReturns();
+  } catch (e) {
+    err.textContent = e.message;
+  }
+  document.getElementById('hmrc-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function showSandboxOutput(data) {
+  const out = document.getElementById('hmrc-sandbox-output');
+  out.hidden = false;
+  out.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+}
+
+document.getElementById('btn-hmrc-testuser').addEventListener('click', async () => {
+  document.getElementById('hmrc-error').textContent = '';
+  try {
+    const r = await post('/api/hmrc/sandbox/test-user', {});
+    showSandboxOutput(
+      `Test organisation created on HMRC's sandbox\n\nVAT registration number: ${r.vrn || '(see below)'}\nGovernment Gateway user ID: ${r.user_id}\nPassword: ${r.password}\n\n` +
+        'Use the VAT number above under "Connect to HMRC" and sign in with these details on HMRC\'s page. Keep them: HMRC will not show the password again.'
+    );
+    if (r.vrn) document.querySelector('#form-hmrc-connect [name=vrn]').value = r.vrn;
+  } catch (e) {
+    document.getElementById('hmrc-error').textContent = e.message;
+  }
+});
+
+document.getElementById('btn-hmrc-headers').addEventListener('click', async () => {
+  document.getElementById('hmrc-error').textContent = '';
+  try {
+    const r = await post('/api/hmrc/sandbox/check-headers', { client: hmrcClient() });
+    showSandboxOutput(`${r.valid ? '✓ HMRC accepts the fraud prevention headers.' : '✗ HMRC reports problems with the fraud prevention headers.'}\n\nHMRC says:\n${JSON.stringify(r.result, null, 2)}\n\nSent:\n${JSON.stringify(r.sent, null, 2)}`);
+  } catch (e) {
+    document.getElementById('hmrc-error').textContent = e.message;
+  }
+});
 
 /** Save the Making Tax Digital request body as a .json file. */
 async function downloadVatReturn(id) {

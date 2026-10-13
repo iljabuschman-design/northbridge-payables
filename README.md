@@ -80,3 +80,22 @@ dialect ("?" placeholders, Postgres-style "::type" casts that are stripped for
 SQLite). Tables are created on start-up and demo data is seeded into an empty
 database. Vercel functions run in London (lhr1) next to the database
 (eu-west-2); every push to main deploys automatically.
+
+## Sending VAT returns to HMRC (Making Tax Digital)
+
+The VAT page can connect each company directly to HMRC's MTD VAT API (OAuth sign-in on HMRC's own
+page, open VAT periods and period keys fetched from HMRC, returns submitted with the required
+fraud prevention headers, HMRC's receipt stored with the return). See `hmrc.js`.
+
+Set these environment variables on the server (Vercel project settings, or the shell locally):
+
+| Variable | Meaning |
+|---|---|
+| `HMRC_CLIENT_ID`, `HMRC_CLIENT_SECRET` | From your application in the HMRC Developer Hub (subscribe it to *VAT (MTD)*) |
+| `HMRC_ENV` | `sandbox` (default, HMRC's test service) or `production` |
+| `HMRC_REDIRECT_URI` | Optional. Default `https://<host>/api/hmrc/callback`; register the same URI on the HMRC application (the VAT page shows it) |
+| `HMRC_TOKEN_KEY` | Optional secret used to encrypt the stored tokens (defaults to the client secret) |
+
+On the sandbox the VAT page can create a test organisation (test VAT number and Government Gateway
+user) and check the fraud prevention headers against HMRC's test service. Going live needs HMRC's
+production approval of the application.
