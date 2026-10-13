@@ -1673,13 +1673,6 @@ async function loadStructure() {
     })
   );
 
-  const countries = new Set(operating.map((e) => e.country).filter(Boolean));
-  document.getElementById('structure-summary').innerHTML = `
-    <div class="card"><div class="label">Companies</div><div class="value">${operating.length}</div><div class="sub">${entities.length - operating.length} consolidated entities</div></div>
-    <div class="card"><div class="label">Groups</div><div class="value">${groups.length}</div><div class="sub">${loners.length} independent compan${loners.length === 1 ? 'y' : 'ies'}</div></div>
-    <div class="card"><div class="label">Countries</div><div class="value">${countries.size}</div><div class="sub">${esc([...countries].join(', '))}</div></div>
-    <div class="card"><div class="label">Financial year ends</div><div class="value">${new Set(operating.map((e) => e.year_end_month).filter(Boolean)).size}</div><div class="sub">different year ends</div></div>`;
-
   const ownerText = (e) =>
     e.is_consolidation
       ? `Consolidates ${(e.members || []).map((m) => entityCode(m)).join(', ')}`
