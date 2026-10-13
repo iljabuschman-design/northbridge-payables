@@ -4167,6 +4167,7 @@ async function finishStart() {
     refreshActive();
   });
   await Promise.all([loadAccounts(), loadCostCenters(), loadPeriods()]);
+  if (window.installExportButtons) installExportButtons();
   showTab(location.hash.slice(1) || 'suppliers');
 }
 

@@ -582,3 +582,8 @@ table.table thead th.sorted-desc::after { content: ' BC'; font-size: 9px; color
 #ic-pl-table tr.sub td, #ic-bs-table tr.sub td { font-weight: 700; }
 #ic-checks-table td:nth-child(3) .muted { font-size: 12.5px; font-weight: 400; margin-top: 2px; }
 #ic-invoices-table td.muted { font-size: 12.5px; max-width: 320px; }
+
+/* Export bar above tables */
+.export-bar { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.export-bar .btn-small { padding: 2px 8px; font-size: 12px; }
+@media print { .export-bar { display: none; } }
