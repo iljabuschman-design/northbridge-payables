@@ -607,6 +607,17 @@
 
   <!-- Setup -->
   <section id="view-setup" class="view" hidden>
+    <nav class="subtabs" id="setup-tabs" role="tablist">
+      <button type="button" class="subtab active" data-setup-tab="structure">Group structure</button>
+      <button type="button" class="subtab" data-setup-tab="accounts">Chart of accounts</button>
+      <button type="button" class="subtab" data-setup-tab="periods">Cost centres &amp; periods</button>
+      <button type="button" class="subtab" data-setup-tab="parties">Customers</button>
+      <button type="button" class="subtab" data-setup-tab="recognition">Invoice recognition</button>
+      <button type="button" class="subtab admin-only" data-setup-tab="users">Users</button>
+      <button type="button" class="subtab" data-setup-tab="fx">Exchange rates</button>
+    </nav>
+
+    <div class="setup-pane" data-setup-pane="structure">
     <div class="panel">
       <div class="panel-header">
         <h2>Group structure</h2>
@@ -621,7 +632,10 @@
       </div>
     </div>
 
-    <div class="panel" style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane" data-setup-pane="accounts" hidden>
+    <div class="panel">
       <div class="panel-header">
         <h2>Chart of accounts</h2>
         <button class="btn btn-primary" id="btn-new-account">+ New account</button>
@@ -635,7 +649,10 @@
       </div>
     </div>
 
-    <div class="grid-2 even" style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane" data-setup-pane="periods" hidden>
+    <div class="grid-2 even">
       <div class="panel">
         <h2>Cost centres</h2>
         <p class="hint">Departments. Choose one on P&amp;L lines (invoices, journals, bank postings) to split results by department.</p>
@@ -665,7 +682,10 @@
       </div>
     </div>
 
-    <div style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane" data-setup-pane="parties" hidden>
+    <div>
       <div class="panel">
         <div class="panel-header">
           <h2>Customers</h2>
@@ -681,7 +701,10 @@
     </div>
 
 
-    <div class="panel" style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane" data-setup-pane="recognition" hidden>
+    <div class="panel">
       <h2>Invoice recognition: what the app has learned</h2>
       <p class="hint">Per supplier: which labels its invoices use, its date format and how its invoices are booked - learned from the corrections made when saving uploaded invoices. "Forget" starts over for that supplier.</p>
       <div class="table-wrap">
@@ -692,7 +715,10 @@
       </div>
     </div>
 
-    <div class="panel admin-only" style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane admin-only" data-setup-pane="users" hidden>
+    <div class="panel">
       <h2>Users</h2>
       <p class="hint"><strong>Admin</strong>: can do everything, including managing users. <strong>Viewer</strong>: can see everything but can't create, edit, pay, upload or close anything.</p>
       <p class="error" id="users-error"></p>
@@ -712,12 +738,16 @@
       </form>
     </div>
 
-    <div class="panel" style="margin-top:16px;">
+    </div>
+
+    <div class="setup-pane" data-setup-pane="fx" hidden>
+    <div class="panel">
       <div class="panel-header">
         <h2>Exchange rates (ECB)</h2>
         <button class="btn btn-small" id="btn-refresh-rates">Refresh now</button>
       </div>
       <div id="fx-status"></div>
+    </div>
     </div>
   </section>
 

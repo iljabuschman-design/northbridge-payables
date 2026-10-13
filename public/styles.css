@@ -648,3 +648,11 @@ dl.kv a:hover { text-decoration: underline; }
 /* Filter that sits in a panel header */
 .inline-filter { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .inline-filter select { font-size: 13.5px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: #fff; font-family: inherit; color: var(--text); }
+
+/* Sub-tabs inside the Setup page */
+.subtabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.subtab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 14px; font: inherit; cursor: pointer; color: inherit; opacity: .7; }
+.subtab:hover { opacity: 1; }
+.subtab.active { opacity: 1; font-weight: 600; border-bottom-color: var(--brand); }
+.setup-pane[hidden] { display: none; }
+.role-viewer .subtab.admin-only { display: none !important; }

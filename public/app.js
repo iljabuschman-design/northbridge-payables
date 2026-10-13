@@ -4899,3 +4899,20 @@ async function finishStart() {
 }
 
 startApp();
+
+// ---------- Setup sub-tabs ----------
+
+(function setUpSetupTabs() {
+  const tabs = [...document.querySelectorAll('#setup-tabs [data-setup-tab]')];
+  const panes = [...document.querySelectorAll('[data-setup-pane]')];
+  function show(name) {
+    if (!tabs.some((t) => t.dataset.setupTab === name)) name = 'structure';
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.setupTab === name));
+    panes.forEach((p) => { p.hidden = p.dataset.setupPane !== name; });
+    try { localStorage.setItem('setupTab', name); } catch { /* storage unavailable */ }
+  }
+  tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.setupTab)));
+  let saved = 'structure';
+  try { saved = localStorage.getItem('setupTab') || saved; } catch { /* ignore */ }
+  show(saved);
+})();
